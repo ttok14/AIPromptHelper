@@ -5,68 +5,48 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, Q
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 
-class CompleterTextEdit(QTextEdit):
-    # (이전과 동일, 변경 없음)
+# (EditableListWidget, CompleterTextEdit, VariablePanel은 변경 없음)
+class EditableListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._completer = None
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_F2:
+            item = self.currentItem()
+            if item: self.editItem(item)
+        else: super().keyPressEvent(event)
+class CompleterTextEdit(QTextEdit):
+    def __init__(self, parent=None): super().__init__(parent); self._completer = None
     def setCompleter(self, completer):
-        if self._completer:
-            self._completer.activated.disconnect(self.insertCompletion)
+        if self._completer: self._completer.activated.disconnect(self.insertCompletion)
         self._completer = completer
-        if not self._completer:
-            return
-        self._completer.setWidget(self)
-        self._completer.setCompletionMode(QCompleter.PopupCompletion)
-        self._completer.activated.connect(self.insertCompletion)
-    def completer(self):
-        return self._completer
+        if not self._completer: return
+        self._completer.setWidget(self); self._completer.setCompletionMode(QCompleter.PopupCompletion); self._completer.activated.connect(self.insertCompletion)
+    def completer(self): return self._completer
     def insertCompletion(self, completion):
-        tc = self.textCursor()
-        prefix = self.completer().completionPrefix()
-        tc.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, len(prefix) + 1)
-        tc.insertText("{" + completion + "}")
-        self.setTextCursor(tc)
+        tc = self.textCursor(); prefix = self.completer().completionPrefix()
+        tc.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, len(prefix) + 1); tc.insertText("{" + completion + "}"); self.setTextCursor(tc)
     def textUnderCursor(self):
-        tc = self.textCursor()
-        block_text = tc.block().text()
-        pos_in_block = tc.positionInBlock()
-        text_before_cursor = block_text[:pos_in_block]
-        last_brace_pos = text_before_cursor.rfind('{')
+        tc = self.textCursor(); block_text = tc.block().text(); pos_in_block = tc.positionInBlock(); text_before_cursor = block_text[:pos_in_block]; last_brace_pos = text_before_cursor.rfind('{')
         if last_brace_pos != -1:
-            if '}' not in text_before_cursor[last_brace_pos:]:
-                return text_before_cursor[last_brace_pos + 1:]
+            if '}' not in text_before_cursor[last_brace_pos:]: return text_before_cursor[last_brace_pos + 1:]
         return ""
     def keyPressEvent(self, e):
         if self._completer and self._completer.popup().isVisible():
-            if e.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab):
-                e.ignore()
-                return
-        super().keyPressEvent(e)
-        prefix = self.textUnderCursor()
-        if not self._completer or prefix == "" and e.text() != '{':
-            self._completer.popup().hide()
-            return
-        self._completer.setCompletionPrefix(prefix)
-        popup = self.completer().popup()
-        if popup.isHidden():
-            popup.setCurrentIndex(self._completer.completionModel().index(0, 0))
-        cr = self.cursorRect()
-        cr.setWidth(popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width())
-        self._completer.complete(cr)
-
+            if e.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab): e.ignore(); return
+        super().keyPressEvent(e); prefix = self.textUnderCursor()
+        if not self._completer or prefix == "" and e.text() != '{': self._completer.popup().hide(); return
+        self._completer.setCompletionPrefix(prefix); popup = self.completer().popup()
+        if popup.isHidden(): popup.setCurrentIndex(self._completer.completionModel().index(0, 0))
+        cr = self.cursorRect(); cr.setWidth(popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width()); self._completer.complete(cr)
 class VariablePanel(QGroupBox):
-    # (이전과 동일, 변경 없음)
     def __init__(self, title="1. 변수 관리"):
         super().__init__(title)
         layout = QVBoxLayout(self)
-        self.list_widget = QListWidget()
+        self.list_widget = EditableListWidget()
         layout.addWidget(self.list_widget)
         btn_layout = QHBoxLayout()
-        self.add_btn = QPushButton("+")
-        self.remove_btn = QPushButton("-")
-        btn_layout.addWidget(self.add_btn)
-        btn_layout.addWidget(self.remove_btn)
+        self.add_btn = QPushButton("+"); self.remove_btn = QPushButton("-")
+        btn_layout.addWidget(self.add_btn); btn_layout.addWidget(self.remove_btn)
         layout.addLayout(btn_layout)
         layout.addWidget(QLabel("변수 이름:"))
         self.name_edit = QLineEdit()
@@ -77,13 +57,23 @@ class VariablePanel(QGroupBox):
         self.load_file_btn = QPushButton("파일 내용 불러오기 (현재 커서 위치에 삽입)")
         layout.addWidget(self.load_file_btn)
 
+
 class TaskPanel(QGroupBox):
-    # (이전과 동일, 변경 없음)
     def __init__(self, title="2. 태스크 관리 (실행 순서)"):
         super().__init__(title)
         layout = QVBoxLayout(self)
-        self.list_widget = QListWidget()
+        self.list_widget = EditableListWidget()
         layout.addWidget(self.list_widget)
+
+        # *** 수정됨: 전체 활성화/비활성화 버튼 레이아웃 추가 ***
+        all_check_layout = QHBoxLayout()
+        self.check_all_btn = QPushButton("모두 활성화")
+        self.uncheck_all_btn = QPushButton("모두 비활성화")
+        all_check_layout.addWidget(self.check_all_btn)
+        all_check_layout.addWidget(self.uncheck_all_btn)
+        layout.addLayout(all_check_layout)
+
+        # *** 수정됨: 기존 버튼 레이아웃은 그대로 유지 ***
         btn_layout = QHBoxLayout()
         self.up_btn = QPushButton("▲")
         self.down_btn = QPushButton("▼")
@@ -97,6 +87,7 @@ class TaskPanel(QGroupBox):
         btn_layout.addWidget(self.copy_btn)
         btn_layout.addWidget(self.remove_btn)
         layout.addLayout(btn_layout)
+
         layout.addWidget(QLabel("태스크 이름 ({변수명} 사용 가능):"))
         self.name_edit = QLineEdit()
         layout.addWidget(self.name_edit)
@@ -104,13 +95,12 @@ class TaskPanel(QGroupBox):
         self.prompt_edit = CompleterTextEdit()
         layout.addWidget(self.prompt_edit)
 
+
+# (RunPanel은 변경 없음)
 class RunPanel(QGroupBox):
-    """실행 및 설정 패널 위젯"""
     def __init__(self, title="3. 실행 및 설정"):
         super().__init__(title)
         layout = QVBoxLayout(self)
-
-        # Settings
         layout.addWidget(QLabel("Gemini API Key:"))
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.Password)
@@ -118,46 +108,37 @@ class RunPanel(QGroupBox):
         layout.addWidget(QLabel("Gemini 모델:"))
         self.model_name_edit = QLineEdit()
         layout.addWidget(self.model_name_edit)
-
         layout.addWidget(QLabel("결과 저장 폴더:"))
         folder_layout = QHBoxLayout()
         self.output_folder_edit = QLineEdit()
         self.select_folder_btn = QPushButton("선택")
-        self.open_output_folder_btn = QPushButton("열기") # *** '열기' 버튼 추가 ***
+        self.open_output_folder_btn = QPushButton("열기")
         folder_layout.addWidget(self.output_folder_edit)
         folder_layout.addWidget(self.select_folder_btn)
-        folder_layout.addWidget(self.open_output_folder_btn) # *** 레이아웃에 추가 ***
+        folder_layout.addWidget(self.open_output_folder_btn)
         layout.addLayout(folder_layout)
-
         layout.addWidget(QLabel("결과 파일 확장자:"))
         self.output_ext_edit = QLineEdit()
         layout.addWidget(self.output_ext_edit)
-        
         layout.addWidget(QLabel("로그 저장 폴더 (선택 사항):"))
         log_folder_layout = QHBoxLayout()
         self.log_folder_edit = QLineEdit()
         self.select_log_folder_btn = QPushButton("선택")
-        self.open_log_folder_btn = QPushButton("열기") # *** '열기' 버튼 추가 ***
+        self.open_log_folder_btn = QPushButton("열기")
         log_folder_layout.addWidget(self.log_folder_edit)
         log_folder_layout.addWidget(self.select_log_folder_btn)
-        log_folder_layout.addWidget(self.open_log_folder_btn) # *** 레이아웃에 추가 ***
+        log_folder_layout.addWidget(self.open_log_folder_btn)
         layout.addLayout(log_folder_layout)
-
         layout.addStretch()
-
-        # Run/Stop buttons
         self.run_btn = QPushButton("▶ 실행")
         self.run_btn.setStyleSheet("font-size: 16px; font-weight: bold; padding: 10px;")
         self.stop_btn = QPushButton("■ 중지")
         self.stop_btn.setStyleSheet("font-size: 16px; font-weight: bold; padding: 10px; color: red;")
         self.stop_btn.hide()
-        
         run_stop_layout = QHBoxLayout()
         run_stop_layout.addWidget(self.run_btn)
         run_stop_layout.addWidget(self.stop_btn)
         layout.addLayout(run_stop_layout)
-        
-        # Log viewer
         layout.addWidget(QLabel("실행 로그:"))
         self.log_viewer = QTextEdit()
         self.log_viewer.setReadOnly(True)
