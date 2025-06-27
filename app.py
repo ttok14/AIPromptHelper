@@ -16,10 +16,9 @@ from core_logic import TaskRunner
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v1.8 (태스크 활성화)") # 버전 업데이트
+        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v2.0 (드래그앤드롭)") # 버전 업데이트
+        # ... 이하 __init__ 동일 ...
         self.setGeometry(100, 100, 1400, 900)
-        
-        # (기존 __init__ 속성들은 변경 없음)
         self.config_file = "workspace.json"
         self.variables = {}
         self.tasks = {}
@@ -35,89 +34,66 @@ class MainWindow(QMainWindow):
         self.vars_proxy_model = QSortFilterProxyModel(self)
         self.vars_proxy_model.setSourceModel(self.all_vars_model)
         self.variable_completer = QCompleter(self.vars_proxy_model, self)
-        
         self.var_panel = VariablePanel()
         self.task_panel = TaskPanel()
         self.run_panel = RunPanel()
-        
         self.setup_ui()
         self.connect_signals()
-        
         self.load_state()
-        
         self.log(f"PySide6 워크플로우 자동화 도구 시작. 현재 {self.thread_pool.maxThreadCount()}개의 스레드 사용 가능.")
         self.update_completer_model()
         self.on_var_selected(None, None)
         self.on_task_selected(None, None)
 
-    # (save_state는 변경 없음)
+    # (save_state, load_state 등 대부분의 함수는 변경 없음)
     def schedule_save(self):
         if self.is_loading_state: return
         self.save_timer.start()
     def save_state(self):
         try:
+            var_order_ids = [self.var_panel.list_widget.item(i).data(Qt.UserRole) for i in range(self.var_panel.list_widget.count())]
             task_order_ids = [self.task_panel.list_widget.item(i).data(Qt.UserRole) for i in range(self.task_panel.list_widget.count())]
+            
+            # *** 수정됨: 저장 시 정렬된 ID 리스트를 사용 ***
             state_data = {
-                'variables': [var.to_dict() for var in self.variables.values()],
+                'variables': [self.variables[var_id].to_dict() for var_id in var_order_ids],
                 'tasks': [self.tasks[task_id].to_dict() for task_id in task_order_ids],
                 'settings': { 'api_key': self.run_panel.api_key_edit.text(), 'model_name': self.run_panel.model_name_edit.text(), 'output_folder': self.run_panel.output_folder_edit.text(), 'output_extension': self.run_panel.output_ext_edit.text(), 'log_folder': self.run_panel.log_folder_edit.text() }
             }
             with open(self.config_file, 'w', encoding='utf-8') as f: json.dump(state_data, f, indent=4, ensure_ascii=False)
         except Exception as e: self.log(f"작업 환경 저장 실패: {e}")
-
     def load_state(self):
         if not os.path.exists(self.config_file): return
         self.is_loading_state = True
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as f:
-                state_data = json.load(f)
-            
-            self.var_panel.list_widget.blockSignals(True)
-            self.task_panel.list_widget.blockSignals(True)
-            
+            with open(self.config_file, 'r', encoding='utf-8') as f: state_data = json.load(f)
+            self.var_panel.list_widget.blockSignals(True); self.task_panel.list_widget.blockSignals(True)
             for var_data in state_data.get('variables', []):
                 var = Variable(id=var_data['id'], name=var_data['name'], value=var_data['value'])
-                self.variables[var.id] = var
-                item = QListWidgetItem(var.name)
-                item.setData(Qt.UserRole, var.id)
-                item.setFlags(item.flags() | Qt.ItemIsEditable)
-                self.var_panel.list_widget.addItem(item)
-
+                self.variables[var.id] = var; item = QListWidgetItem(var.name); item.setData(Qt.UserRole, var.id)
+                item.setFlags(item.flags() | Qt.ItemIsEditable); self.var_panel.list_widget.addItem(item)
             for task_data in state_data.get('tasks', []):
-                # *** 수정됨: enabled 속성 로드 (하위 호환성 고려) ***
                 task_enabled = task_data.get('enabled', True)
                 task = Task(id=task_data['id'], name=task_data['name'], prompt=task_data['prompt'], enabled=task_enabled)
-                self.tasks[task.id] = task
-                item = QListWidgetItem(task.name)
-                item.setData(Qt.UserRole, task.id)
-                # *** 수정됨: 체크박스 플래그 및 상태 설정 ***
+                self.tasks[task.id] = task; item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
                 item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked)
-                self.task_panel.list_widget.addItem(item)
-            
-            self.var_panel.list_widget.blockSignals(False)
-            self.task_panel.list_widget.blockSignals(False)
-
+                item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked); self.task_panel.list_widget.addItem(item)
+            self.var_panel.list_widget.blockSignals(False); self.task_panel.list_widget.blockSignals(False)
             settings = state_data.get('settings', {})
-            # ... (이하 로직은 변경 없음)
             self.run_panel.api_key_edit.setText(settings.get('api_key', ''))
             self.run_panel.model_name_edit.setText(settings.get('model_name', 'gemini-1.5-flash-latest'))
             self.run_panel.output_folder_edit.setText(settings.get('output_folder', os.path.join(os.getcwd(), "output_pyside")))
             self.run_panel.output_ext_edit.setText(settings.get('output_extension', '.md'))
             self.run_panel.log_folder_edit.setText(settings.get('log_folder', ''))
-            self.log(f"저장된 작업 환경 '{self.config_file}'을 불러왔습니다.")
-            self.load_last_log_file(settings.get('log_folder', ''))
+            self.log(f"저장된 작업 환경 '{self.config_file}'을 불러왔습니다."); self.load_last_log_file(settings.get('log_folder', ''))
         except Exception as e: QMessageBox.critical(self, "상태 로드 오류", f"'{self.config_file}' 파일을 불러오는 중 오류가 발생했습니다:\n{e}")
         finally: self.is_loading_state = False
-
-    # (load_last_log_file, closeEvent, setup_ui 등은 변경 없음)
     def load_last_log_file(self, log_folder):
         if not log_folder or not os.path.isdir(log_folder): return
         try:
             log_files = [f for f in os.listdir(log_folder) if f.startswith('log_') and f.endswith('.txt')]
             if not log_files: return
-            last_log_file = sorted(log_files)[-1]
-            filepath = os.path.join(log_folder, last_log_file)
+            last_log_file = sorted(log_files)[-1]; filepath = os.path.join(log_folder, last_log_file)
             with open(filepath, 'r', encoding='utf-8') as f: log_content = f.read()
             self.run_panel.log_viewer.append("--- 이전 로그 불러오기 ---\n" + log_content + "\n------------------------\n")
             self.log(f"이전 로그 파일 '{last_log_file}'을 불러왔습니다.")
@@ -157,14 +133,19 @@ class MainWindow(QMainWindow):
         self.task_panel.list_widget.itemChanged.connect(self.on_task_item_changed)
         self.task_panel.name_edit.editingFinished.connect(self.update_task_details)
         self.task_panel.prompt_edit.textChanged.connect(self.update_task_details)
-        # *** 추가됨: 전체 활성화/비활성화 버튼 시그널 연결 ***
         self.task_panel.check_all_btn.clicked.connect(lambda: self.set_all_tasks_checked(True))
         self.task_panel.uncheck_all_btn.clicked.connect(lambda: self.set_all_tasks_checked(False))
-        
+
+        # *** 추가됨: 드래그 앤 드롭 완료 시그널 연결 ***
+        self.var_panel.list_widget.model().rowsMoved.connect(
+            lambda: self.on_list_order_changed("변수"))
+        self.task_panel.list_widget.model().rowsMoved.connect(
+            lambda: self.on_list_order_changed("태스크"))
+
         # 실행 패널
         self.run_panel.run_btn.clicked.connect(self.start_execution)
-        # ... (이하 시그널 연결은 변경 없음)
         self.run_panel.stop_btn.clicked.connect(self.stop_execution)
+        self.run_panel.clear_log_btn.clicked.connect(self.clear_log)
         self.run_panel.model_name_edit.editingFinished.connect(self.schedule_save)
         self.run_panel.api_key_edit.editingFinished.connect(self.schedule_save)
         self.run_panel.output_folder_edit.editingFinished.connect(self.schedule_save)
@@ -175,7 +156,19 @@ class MainWindow(QMainWindow):
         self.run_panel.open_output_folder_btn.clicked.connect(self.open_output_folder)
         self.run_panel.open_log_folder_btn.clicked.connect(self.open_log_folder)
 
-    # (열기 기능, set_ui_enabled, update_completer_model, 변수 관련 함수는 대부분 변경 없음)
+    # *** 추가됨: 순서 변경을 처리하는 공통 슬롯 ***
+    @Slot(str)
+    def on_list_order_changed(self, list_name):
+        """리스트의 순서가 변경되었을 때(드래그앤드롭, 버튼) 호출됩니다."""
+        if self.is_loading_state: return
+        self.log(f"{list_name} 목록 순서가 변경되었습니다.")
+        self.schedule_save()
+
+    def clear_log(self):
+        self.run_panel.log_viewer.clear()
+        self.log("로그가 삭제되었습니다.")
+    
+    # ... (중간 함수들은 변경 없음) ...
     def _open_folder_at_path(self, path):
         if not path or not os.path.isdir(path): QMessageBox.warning(self, "경고", f"유효하지 않은 폴더 경로입니다:\n{path}"); return
         try:
@@ -192,7 +185,7 @@ class MainWindow(QMainWindow):
         self.run_panel.output_folder_edit.setEnabled(enabled); self.run_panel.select_folder_btn.setEnabled(enabled)
         self.run_panel.open_output_folder_btn.setEnabled(enabled); self.run_panel.output_ext_edit.setEnabled(enabled)
         self.run_panel.log_folder_edit.setEnabled(enabled); self.run_panel.select_log_folder_btn.setEnabled(enabled)
-        self.run_panel.open_log_folder_btn.setEnabled(enabled)
+        self.run_panel.open_log_folder_btn.setEnabled(enabled); self.run_panel.clear_log_btn.setEnabled(enabled)
         if enabled: self.run_panel.run_btn.show(); self.run_panel.stop_btn.hide()
         else: self.run_panel.run_btn.hide(); self.run_panel.stop_btn.show()
     def update_completer_model(self): self.all_vars_model.setStringList([var.name for var in self.variables.values()])
@@ -257,121 +250,87 @@ class MainWindow(QMainWindow):
             with open(filepath, 'r', encoding='utf-8') as f: content = f.read()
             self.var_panel.value_edit.insertPlainText(content); self.log(f"'{os.path.basename(filepath)}' 내용을 현재 변수에 추가함"); self.schedule_save()
         except Exception as e: QMessageBox.critical(self, "파일 읽기 오류", str(e))
-
-    # --- 태스크 관련 함수들 (수정됨) ---
-
     def add_task(self):
-        task = Task(); self.tasks[task.id] = task
-        item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
-        # *** 수정됨: 체크박스 플래그 및 상태 설정 ***
+        task = Task(); self.tasks[task.id] = task; item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
         item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
         item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked)
         self.task_panel.list_widget.addItem(item); self.task_panel.list_widget.setCurrentItem(item)
         self.log(f"태스크 '{task.name}' 추가됨"); self.schedule_save()
-
     def remove_task(self):
         item = self.task_panel.list_widget.currentItem()
         if not item: return
         task_id = item.data(Qt.UserRole)
         if QMessageBox.question(self, "확인", f"'{item.text()}' 태스크를 정말 삭제하시겠습니까?") == QMessageBox.Yes:
-            del self.tasks[task_id]
-            self.task_panel.list_widget.takeItem(self.task_panel.list_widget.row(item))
+            del self.tasks[task_id]; self.task_panel.list_widget.takeItem(self.task_panel.list_widget.row(item))
             self.log(f"태스크 '{item.text()}' 삭제됨"); self.schedule_save()
-
     def copy_task(self):
-        item = self.task_panel.list_widget.currentItem()
+        item = self.task_panel.list_widget.currentItem();
         if not item: return
-        original_task = self.tasks[item.data(Qt.UserRole)]
-        new_task = original_task.copy()
-        self.tasks[new_task.id] = new_task
-        new_item = QListWidgetItem(new_task.name); new_item.setData(Qt.UserRole, new_task.id)
-        # *** 수정됨: 체크박스 플래그 및 상태 설정 ***
+        original_task = self.tasks[item.data(Qt.UserRole)]; new_task = original_task.copy()
+        self.tasks[new_task.id] = new_task; new_item = QListWidgetItem(new_task.name); new_item.setData(Qt.UserRole, new_task.id)
         new_item.setFlags(new_item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
         new_item.setCheckState(Qt.Checked if new_task.enabled else Qt.Unchecked)
         current_row = self.task_panel.list_widget.row(item)
-        self.task_panel.list_widget.insertItem(current_row + 1, new_item)
-        self.task_panel.list_widget.setCurrentItem(new_item)
+        self.task_panel.list_widget.insertItem(current_row + 1, new_item); self.task_panel.list_widget.setCurrentItem(new_item)
         self.log(f"태스크 '{original_task.name}' 복사됨"); self.schedule_save()
 
     def move_task(self, direction):
-        # (변경 없음)
-        list_widget = self.task_panel.list_widget; item = list_widget.currentItem()
+        # *** 수정됨: schedule_save() 호출 제거 ***
+        list_widget = self.task_panel.list_widget
+        item = list_widget.currentItem()
         if not item: return
+
         current_row = list_widget.row(item)
+        new_row = -1
+
         if direction == 'up' and current_row > 0:
-            new_row = current_row - 1; list_widget.takeItem(current_row); list_widget.insertItem(new_row, item); list_widget.setCurrentRow(new_row); self.schedule_save()
+            new_row = current_row - 1
         elif direction == 'down' and current_row < list_widget.count() - 1:
-            new_row = current_row + 1; list_widget.takeItem(current_row); list_widget.insertItem(new_row, item); list_widget.setCurrentRow(new_row); self.schedule_save()
-        if 'new_row' in locals(): self.log(f"태스크 순서 변경됨")
+            new_row = current_row + 1
+        
+        if new_row != -1:
+            # 아이템을 이동시키면 model().rowsMoved 시그널이 발생하여
+            # on_list_order_changed 슬롯이 호출됩니다.
+            list_widget.takeItem(current_row)
+            list_widget.insertItem(new_row, item)
+            list_widget.setCurrentRow(new_row)
 
     def update_task_details(self):
-        # (이름 변경 로직은 itemChanged 슬롯으로 이전되었으므로, 여기서는 프롬프트만 업데이트)
-        item = self.task_panel.list_widget.currentItem()
+        item = self.task_panel.list_widget.currentItem();
         if not item: return
         task_id = item.data(Qt.UserRole)
         if task_id in self.tasks:
-            task = self.tasks[task_id]
-            # 이름 업데이트 (패널 -> 데이터)
-            new_name = self.task_panel.name_edit.text()
-            if task.name != new_name:
-                task.name = new_name
-                item.setText(new_name) # itemChanged 트리거
-            
-            # 프롬프트 업데이트 (패널 -> 데이터)
+            task = self.tasks[task_id]; new_name = self.task_panel.name_edit.text()
+            if task.name != new_name: task.name = new_name; item.setText(new_name)
             new_prompt = self.task_panel.prompt_edit.toPlainText()
-            if task.prompt != new_prompt:
-                task.prompt = new_prompt
-                self.schedule_save()
-
-    # *** 추가됨: 전체 태스크 활성화/비활성화 슬롯 ***
+            if task.prompt != new_prompt: task.prompt = new_prompt; self.schedule_save()
     def set_all_tasks_checked(self, checked):
-        state = Qt.Checked if checked else Qt.Unchecked
-        action_text = "활성화" if checked else "비활성화"
-        # itemChanged 시그널이 반복적으로 발생하는 것을 막기 위해 block
+        state = Qt.Checked if checked else Qt.Unchecked; action_text = "활성화" if checked else "비활성화"
         self.task_panel.list_widget.blockSignals(True)
         for i in range(self.task_panel.list_widget.count()):
-            item = self.task_panel.list_widget.item(i)
-            item.setCheckState(state)
+            item = self.task_panel.list_widget.item(i); item.setCheckState(state)
             task_id = item.data(Qt.UserRole)
-            if task_id in self.tasks:
-                self.tasks[task_id].enabled = checked
+            if task_id in self.tasks: self.tasks[task_id].enabled = checked
         self.task_panel.list_widget.blockSignals(False)
-        self.log(f"모든 태스크를 {action_text}했습니다.")
-        self.schedule_save()
-
+        self.log(f"모든 태스크를 {action_text}했습니다."); self.schedule_save()
     @Slot(QListWidgetItem)
     def on_task_item_changed(self, item):
-        # *** 수정됨: 이름 변경과 체크 상태 변경을 모두 처리 ***
         if self.is_loading_state or not item: return
-
         task_id = item.data(Qt.UserRole)
         if task_id in self.tasks:
-            task = self.tasks[task_id]
-            
-            # 1. 이름 변경 감지 및 처리
-            new_name = item.text()
+            task = self.tasks[task_id]; new_name = item.text()
             if task.name != new_name:
-                self.log(f"태스크 이름 변경: '{task.name}' -> '{new_name}'")
-                task.name = new_name
+                self.log(f"태스크 이름 변경: '{task.name}' -> '{new_name}'"); task.name = new_name
                 if self.task_panel.list_widget.currentItem() == item:
-                    self.task_panel.name_edit.blockSignals(True)
-                    self.task_panel.name_edit.setText(new_name)
-                    self.task_panel.name_edit.blockSignals(False)
+                    self.task_panel.name_edit.blockSignals(True); self.task_panel.name_edit.setText(new_name); self.task_panel.name_edit.blockSignals(False)
                 self.schedule_save()
-
-            # 2. 체크 상태 변경 감지 및 처리
             new_enabled_state = (item.checkState() == Qt.Checked)
             if task.enabled != new_enabled_state:
-                task.enabled = new_enabled_state
-                action_text = "활성화" if new_enabled_state else "비활성화"
-                self.log(f"태스크 '{task.name}' {action_text}됨")
-                self.schedule_save()
-    
+                task.enabled = new_enabled_state; action_text = "활성화" if new_enabled_state else "비활성화"
+                self.log(f"태스크 '{task.name}' {action_text}됨"); self.schedule_save()
     def on_task_selected(self, current, previous):
-        # (변경 없음)
         is_item_selected = current is not None
-        for btn in [self.task_panel.remove_btn, self.task_panel.copy_btn, self.task_panel.up_btn, self.task_panel.down_btn]:
-            btn.setEnabled(is_item_selected)
+        for btn in [self.task_panel.remove_btn, self.task_panel.copy_btn, self.task_panel.up_btn, self.task_panel.down_btn]: btn.setEnabled(is_item_selected)
         self.task_panel.name_edit.setEnabled(is_item_selected); self.task_panel.prompt_edit.setEnabled(is_item_selected)
         if not current: self.task_panel.name_edit.clear(); self.task_panel.prompt_edit.clear(); return
         task_id = current.data(Qt.UserRole)
@@ -380,41 +339,29 @@ class MainWindow(QMainWindow):
             self.task_panel.name_edit.blockSignals(True); self.task_panel.prompt_edit.blockSignals(True)
             self.task_panel.name_edit.setText(task.name); self.task_panel.prompt_edit.setPlainText(task.prompt)
             self.task_panel.name_edit.blockSignals(False); self.task_panel.prompt_edit.blockSignals(False)
-
     def start_execution(self):
         api_key = self.run_panel.api_key_edit.text()
         if not api_key: QMessageBox.warning(self, "오류", "Gemini API 키를 입력해주세요."); return
-        
-        # *** 수정됨: 활성화된 태스크만 필터링하여 실행 목록 생성 ***
         tasks_to_run = []
         for i in range(self.task_panel.list_widget.count()):
             item = self.task_panel.list_widget.item(i)
             if item.checkState() == Qt.Checked:
                 task_id = item.data(Qt.UserRole)
-                if task_id in self.tasks:
-                    tasks_to_run.append(self.tasks[task_id])
-
-        if not tasks_to_run:
-            QMessageBox.warning(self, "오류", "실행할 활성화된 태스크가 없습니다."); return
-        
+                if task_id in self.tasks: tasks_to_run.append(self.tasks[task_id])
+        if not tasks_to_run: QMessageBox.warning(self, "오류", "실행할 활성화된 태스크가 없습니다."); return
         self.set_ui_enabled(False)
         self.current_runner = TaskRunner(
             api_key=api_key, model_name=self.run_panel.model_name_edit.text(), variables=self.variables,
-            tasks_in_order=tasks_to_run, # 필터링된 리스트 전달
-            output_folder=self.run_panel.output_folder_edit.text(),
+            tasks_in_order=tasks_to_run, output_folder=self.run_panel.output_folder_edit.text(),
             output_extension=self.run_panel.output_ext_edit.text(), log_folder=self.run_panel.log_folder_edit.text())
         self.current_runner.signals.log_message.connect(self.log)
         self.current_runner.signals.error.connect(lambda e: QMessageBox.critical(self, "실행 오류", e))
         self.current_runner.signals.finished.connect(self.on_execution_finished)
         self.thread_pool.start(self.current_runner)
-        
     def stop_execution(self):
         if self.current_runner: self.log("사용자 중지 요청..."); self.current_runner.stop()
-        
     def on_execution_finished(self):
         self.set_ui_enabled(True); self.current_runner = None
-
-    # (select_output_folder, select_log_folder는 변경 없음)
     def select_output_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "결과 저장 폴더 선택")
         if folder: self.run_panel.output_folder_edit.setText(folder); self.schedule_save()

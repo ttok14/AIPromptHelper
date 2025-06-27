@@ -1,19 +1,31 @@
 # ui_components.py
 
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QCompleter,
-                             QPushButton, QLineEdit, QTextEdit, QGroupBox, QLabel)
+                             QPushButton, QLineEdit, QTextEdit, QGroupBox, QLabel,
+                             QAbstractItemView) # *** 추가됨 ***
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 
-# (EditableListWidget, CompleterTextEdit, VariablePanel은 변경 없음)
 class EditableListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # *** 추가됨: 드래그 앤 드롭 기능 활성화 ***
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setAcceptDrops(True)
+        self.setDefaultDropAction(Qt.MoveAction)
+
     def keyPressEvent(self, event):
+        """F2 키가 눌리면 선택된 아이템을 편집 모드로 전환합니다."""
         if event.key() == Qt.Key_F2:
             item = self.currentItem()
-            if item: self.editItem(item)
-        else: super().keyPressEvent(event)
+            if item:
+                self.editItem(item)
+        else:
+            super().keyPressEvent(event)
+
+
+# (CompleterTextEdit, VariablePanel, TaskPanel, RunPanel의 나머지 코드는 변경 없음)
 class CompleterTextEdit(QTextEdit):
     def __init__(self, parent=None): super().__init__(parent); self._completer = None
     def setCompleter(self, completer):
@@ -56,47 +68,28 @@ class VariablePanel(QGroupBox):
         layout.addWidget(self.value_edit)
         self.load_file_btn = QPushButton("파일 내용 불러오기 (현재 커서 위치에 삽입)")
         layout.addWidget(self.load_file_btn)
-
-
 class TaskPanel(QGroupBox):
     def __init__(self, title="2. 태스크 관리 (실행 순서)"):
         super().__init__(title)
         layout = QVBoxLayout(self)
+        all_check_layout = QHBoxLayout()
+        self.check_all_btn = QPushButton("모두 활성화"); self.uncheck_all_btn = QPushButton("모두 비활성화")
+        all_check_layout.addWidget(self.check_all_btn); all_check_layout.addWidget(self.uncheck_all_btn)
+        layout.addLayout(all_check_layout)
         self.list_widget = EditableListWidget()
         layout.addWidget(self.list_widget)
-
-        # *** 수정됨: 전체 활성화/비활성화 버튼 레이아웃 추가 ***
-        all_check_layout = QHBoxLayout()
-        self.check_all_btn = QPushButton("모두 활성화")
-        self.uncheck_all_btn = QPushButton("모두 비활성화")
-        all_check_layout.addWidget(self.check_all_btn)
-        all_check_layout.addWidget(self.uncheck_all_btn)
-        layout.addLayout(all_check_layout)
-
-        # *** 수정됨: 기존 버튼 레이아웃은 그대로 유지 ***
         btn_layout = QHBoxLayout()
-        self.up_btn = QPushButton("▲")
-        self.down_btn = QPushButton("▼")
-        self.add_btn = QPushButton("+")
-        self.copy_btn = QPushButton("복사")
-        self.remove_btn = QPushButton("-")
-        btn_layout.addWidget(self.up_btn)
-        btn_layout.addWidget(self.down_btn)
-        btn_layout.addStretch()
-        btn_layout.addWidget(self.add_btn)
-        btn_layout.addWidget(self.copy_btn)
-        btn_layout.addWidget(self.remove_btn)
+        self.up_btn = QPushButton("▲"); self.down_btn = QPushButton("▼"); self.add_btn = QPushButton("+")
+        self.copy_btn = QPushButton("복사"); self.remove_btn = QPushButton("-")
+        btn_layout.addWidget(self.up_btn); btn_layout.addWidget(self.down_btn); btn_layout.addStretch()
+        btn_layout.addWidget(self.add_btn); btn_layout.addWidget(self.copy_btn); btn_layout.addWidget(self.remove_btn)
         layout.addLayout(btn_layout)
-
         layout.addWidget(QLabel("태스크 이름 ({변수명} 사용 가능):"))
         self.name_edit = QLineEdit()
         layout.addWidget(self.name_edit)
         layout.addWidget(QLabel("프롬프트 템플릿 (자동완성: '{' 입력):"))
         self.prompt_edit = CompleterTextEdit()
         layout.addWidget(self.prompt_edit)
-
-
-# (RunPanel은 변경 없음)
 class RunPanel(QGroupBox):
     def __init__(self, title="3. 실행 및 설정"):
         super().__init__(title)
@@ -139,7 +132,12 @@ class RunPanel(QGroupBox):
         run_stop_layout.addWidget(self.run_btn)
         run_stop_layout.addWidget(self.stop_btn)
         layout.addLayout(run_stop_layout)
-        layout.addWidget(QLabel("실행 로그:"))
+        log_header_layout = QHBoxLayout()
+        log_header_layout.addWidget(QLabel("실행 로그:"))
+        log_header_layout.addStretch()
+        self.clear_log_btn = QPushButton("로그 지우기")
+        log_header_layout.addWidget(self.clear_log_btn)
+        layout.addLayout(log_header_layout)
         self.log_viewer = QTextEdit()
         self.log_viewer.setReadOnly(True)
         layout.addWidget(self.log_viewer)
