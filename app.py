@@ -15,13 +15,12 @@ from core_logic import TaskRunner
 from variable_handler import VariableHandler
 from task_handler import TaskHandler
 
-# *** 추가됨: 내장 변수 목록을 중앙에서 관리 ***
 BUILT_IN_VARS = {'RESPONSE'}
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v4.0 (출력 템플릿)")
+        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v4.1 (템플릿 자동완성)")
         self.setGeometry(100, 100, 1400, 900)
         
         self.config_file = "workspace.json"; self.variables = {}; self.tasks = {}; self.is_loading_state = False
@@ -29,7 +28,6 @@ class MainWindow(QMainWindow):
         
         self.var_panel = VariablePanel(); self.task_panel = TaskPanel(); self.run_panel = RunPanel()
         
-        # *** 수정됨: 핸들러 생성 시 내장 변수 목록 전달 ***
         self.variable_handler = VariableHandler(self.var_panel, self.variables, BUILT_IN_VARS)
         self.task_handler = TaskHandler(self.task_panel, self.tasks)
         
@@ -41,7 +39,6 @@ class MainWindow(QMainWindow):
         self.log(f"PySide6 워크플로우 자동화 도구 시작. 현재 {self.thread_pool.maxThreadCount()}개의 스레드 사용 가능.")
         self.update_completer_model_and_filter(); self.task_handler.on_task_selected(None, None)
 
-    # ... setup_ui, connect_signals, save_state 등 대부분의 함수는 이전 버전과 동일 ...
     def setup_ui(self):
         splitter = QSplitter(Qt.Horizontal); splitter.addWidget(self.var_panel); splitter.addWidget(self.task_panel); splitter.addWidget(self.run_panel)
         splitter.setSizes([350, 600, 450]); central_widget = QWidget(); layout = QHBoxLayout(central_widget)
@@ -49,11 +46,19 @@ class MainWindow(QMainWindow):
         self.vars_proxy_model.setSourceModel(self.all_vars_model)
         for completer in [self.task_completer, self.variable_completer]:
             completer.setCaseSensitivity(Qt.CaseInsensitive); completer.setFilterMode(Qt.MatchContains)
-        self.var_panel.value_edit.setCompleter(self.variable_completer); self.task_panel.prompt_edit.setCompleter(self.task_completer)
+        
+        self.var_panel.value_edit.setCompleter(self.variable_completer)
+        self.task_panel.prompt_edit.setCompleter(self.task_completer)
+        
+        # *** 수정됨: output_template_edit에도 자동완성기 연결 ***
+        self.task_panel.output_template_edit.setCompleter(self.task_completer)
+        
         if not os.path.exists(self.config_file):
             self.run_panel.model_name_edit.setText("gemini-1.5-flash-latest")
             self.run_panel.output_folder_edit.setText(os.path.join(os.getcwd(), "output_pyside"))
             self.run_panel.output_ext_edit.setText(".md")
+
+    # ... 이하 모든 함수는 이전 버전과 동일 ...
     def connect_signals(self):
         self.variable_handler.connect_signals(); self.task_handler.connect_signals()
         self.variable_handler.signals.state_changed.connect(self.schedule_save)
@@ -88,7 +93,6 @@ class MainWindow(QMainWindow):
                               'log_folder': self.run_panel.log_folder_edit.text() }}
             with open(self.config_file, 'w', encoding='utf-8') as f: json.dump(state_data, f, indent=4, ensure_ascii=False)
         except Exception as e: self.log(f"작업 환경 저장 실패: {e}")
-
     def load_state(self):
         if not os.path.exists(self.config_file): return
         self.is_loading_state = True; self.variable_handler.is_loading = True; self.task_handler.is_loading = True
@@ -96,7 +100,7 @@ class MainWindow(QMainWindow):
             with open(self.config_file, 'r', encoding='utf-8') as f: state_data = json.load(f)
             self.var_panel.list_widget.clear(); self.variables.clear(); self.task_panel.list_widget.clear(); self.tasks.clear()
             for var_data in state_data.get('variables', []):
-                if var_data.get('name', '').upper() in BUILT_IN_VARS: continue # 예약어와 같은 이름의 변수는 로드하지 않음
+                if var_data.get('name', '').upper() in BUILT_IN_VARS: continue
                 var = Variable(id=var_data.get('id'), name=var_data.get('name'), value=var_data.get('value'))
                 if not var.id or not var.name: continue
                 self.variables[var.id] = var; item = QListWidgetItem(var.name); item.setData(Qt.UserRole, var.id)
@@ -104,7 +108,7 @@ class MainWindow(QMainWindow):
             for task_data in state_data.get('tasks', []):
                 task = Task(id=task_data.get('id'), name=task_data.get('name'), 
                             prompt=task_data.get('prompt'), enabled=task_data.get('enabled', True),
-                            output_template=task_data.get('output_template', '')) # *** 수정됨 ***
+                            output_template=task_data.get('output_template', ''))
                 if not task.id or not task.name: continue
                 self.tasks[task.id] = task; item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
                 item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
@@ -117,8 +121,6 @@ class MainWindow(QMainWindow):
             self.log(f"저장된 작업 환경 '{self.config_file}'을 불러왔습니다."); self.load_last_log_file(settings.get('log_folder', ''))
         except Exception as e: QMessageBox.critical(self, "상태 로드 오류", f"'{self.config_file}' 파일을 불러오는 중 오류가 발생했습니다:\n{e}")
         finally: self.is_loading_state = False; self.variable_handler.is_loading = False; self.task_handler.is_loading = False
-
-    # ... 이하 모든 함수는 이전 버전과 동일 ...
     def closeEvent(self, event):
         reply = QMessageBox.question(self, '종료', "종료하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
         if reply == QMessageBox.StandardButton.Yes: self.save_state(); event.accept()

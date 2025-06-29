@@ -6,20 +6,17 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, Q
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor, QPalette
 
+# ... EditableListWidget, CompleterTextEdit, VariablePanel 클래스는 변경 없음 ...
 class EditableListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setDragDropMode(QAbstractItemView.InternalMove)
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.setAcceptDrops(True)
-        self.setDefaultDropAction(Qt.MoveAction)
-
+        self.setDragDropMode(QAbstractItemView.InternalMove); self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setAcceptDrops(True); self.setDefaultDropAction(Qt.MoveAction)
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_F2:
             item = self.currentItem()
             if item: self.editItem(item)
         else: super().keyPressEvent(event)
-
 class CompleterTextEdit(QTextEdit):
     def __init__(self, parent=None): super().__init__(parent); self._completer = None
     def setCompleter(self, completer):
@@ -44,35 +41,18 @@ class CompleterTextEdit(QTextEdit):
         self._completer.setCompletionPrefix(prefix); popup = self.completer().popup()
         if popup.isHidden(): popup.setCurrentIndex(self._completer.completionModel().index(0, 0))
         cr = self.cursorRect(); cr.setWidth(popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width()); self._completer.complete(cr)
-        
 class VariablePanel(QGroupBox):
     def __init__(self, title="1. 변수 관리"):
         super().__init__(title)
-        layout = QVBoxLayout(self)
-        self.list_widget = EditableListWidget()
-        layout.addWidget(self.list_widget)
-        btn_layout = QHBoxLayout()
-        self.add_btn = QPushButton("+"); self.remove_btn = QPushButton("-")
-        btn_layout.addWidget(self.add_btn); btn_layout.addWidget(self.remove_btn)
-        layout.addLayout(btn_layout)
-        
-        layout.addWidget(QLabel("변수 이름:"))
-        self.name_edit = QLineEdit()
-        layout.addWidget(self.name_edit)
-        
-        # *** 수정됨: 예약어 안내 라벨 추가 ***
-        reserved_label = QLabel("(예약어: RESPONSE 사용 불가)")
-        palette = reserved_label.palette()
-        palette.setColor(QPalette.WindowText, Qt.gray)
-        reserved_label.setPalette(palette)
-        layout.addWidget(reserved_label)
+        layout = QVBoxLayout(self); self.list_widget = EditableListWidget(); layout.addWidget(self.list_widget)
+        btn_layout = QHBoxLayout(); self.add_btn = QPushButton("+"); self.remove_btn = QPushButton("-")
+        btn_layout.addWidget(self.add_btn); btn_layout.addWidget(self.remove_btn); layout.addLayout(btn_layout)
+        layout.addWidget(QLabel("변수 이름:")); self.name_edit = QLineEdit(); layout.addWidget(self.name_edit)
+        reserved_label = QLabel("(예약어: RESPONSE 사용 불가)"); palette = reserved_label.palette()
+        palette.setColor(QPalette.WindowText, Qt.gray); reserved_label.setPalette(palette); layout.addWidget(reserved_label)
+        layout.addWidget(QLabel("변수 내용 (자동완성: '{' 입력):")); self.value_edit = CompleterTextEdit()
+        layout.addWidget(self.value_edit); self.load_file_btn = QPushButton("파일 내용 불러오기..."); layout.addWidget(self.load_file_btn)
 
-        layout.addWidget(QLabel("변수 내용 (자동완성: '{' 입력):"))
-        self.value_edit = CompleterTextEdit()
-        layout.addWidget(self.value_edit)
-        self.load_file_btn = QPushButton("파일 내용 불러오기...")
-        layout.addWidget(self.load_file_btn)
-        
 class TaskPanel(QGroupBox):
     def __init__(self, title="2. 태스크 관리 (실행 순서)"):
         super().__init__(title)
@@ -98,18 +78,19 @@ class TaskPanel(QGroupBox):
         self.prompt_edit = CompleterTextEdit()
         layout.addWidget(self.prompt_edit)
 
-        # *** 수정됨: 저장 내용 템플릿 UI 추가 ***
         layout.addWidget(QLabel("저장 내용 템플릿:"))
-        self.output_template_edit = QTextEdit()
+        # *** 수정됨: QTextEdit -> CompleterTextEdit ***
+        self.output_template_edit = CompleterTextEdit()
         layout.addWidget(self.output_template_edit)
-        template_info_label = QLabel("({RESPONSE} 변수 사용 가능, 비워두면 답변 전체 저장)")
+        
+        template_info_label = QLabel("({RESPONSE} 및 사용자 변수 사용 가능, 비워두면 답변 전체 저장)")
         palette = template_info_label.palette()
         palette.setColor(QPalette.WindowText, Qt.gray)
         template_info_label.setPalette(palette)
         layout.addWidget(template_info_label)
 
+# ... RunPanel 클래스는 변경 없음 ...
 class RunPanel(QGroupBox):
-    # (이전과 동일, 변경 없음)
     def __init__(self, title="3. 실행 및 설정"):
         super().__init__(title)
         layout = QVBoxLayout(self); layout.addWidget(QLabel("Gemini API Key:")); self.api_key_edit = QLineEdit()
