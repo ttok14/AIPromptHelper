@@ -2,15 +2,14 @@
 
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QCompleter,
                              QPushButton, QLineEdit, QTextEdit, QGroupBox, QLabel,
-                             QAbstractItemView)
+                             QAbstractItemView, QComboBox) # QComboBox는 이미 임포트됨
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QTextCursor, QPalette, QIcon
 
-# *** 신규 임포트 ***
 from syntax_highlighter import VariableSyntaxHighlighter
 
+# ... EditableListWidget, CompleterTextEdit, VariablePanel, TaskPanel 클래스는 변경 없음 ...
 class EditableListWidget(QListWidget):
-    # ... (변경 없음) ...
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDragDropMode(QAbstractItemView.InternalMove); self.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -20,62 +19,40 @@ class EditableListWidget(QListWidget):
             item = self.currentItem()
             if item: self.editItem(item)
         else: super().keyPressEvent(event)
-
 class CompleterTextEdit(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._completer = QCompleter(self)
-        self._completer.setWidget(self)
+        self._completer = QCompleter(self); self._completer.setWidget(self)
         self._completer.setCompletionMode(QCompleter.PopupCompletion)
-        
-        # *** 수정됨: Syntax Highlighter 생성 및 연결 ***
         self.highlighter = VariableSyntaxHighlighter(self.document())
-
     def setModel(self, model):
         if self._completer.model():
             try: self._completer.activated.disconnect(self.insertCompletion)
             except RuntimeError: pass
         self._completer.setModel(model)
-        if model:
-            self._completer.activated.connect(self.insertCompletion)
-
+        if model: self._completer.activated.connect(self.insertCompletion)
     def completer(self): return self._completer
-    
     @Slot(str)
     def insertCompletion(self, completion):
         tc = self.textCursor(); prefix = self.completer().completionPrefix()
         tc.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, len(prefix) + 1)
         tc.insertText("{" + completion + "}"); self.setTextCursor(tc)
-
     def textUnderCursor(self):
         tc = self.textCursor(); block_text = tc.block().text(); pos_in_block = tc.positionInBlock()
         text_before_cursor = block_text[:pos_in_block]; last_brace_pos = text_before_cursor.rfind('{')
         if last_brace_pos != -1:
             suffix = text_before_cursor[last_brace_pos:]
-            if '}' not in suffix and ' ' not in suffix and '\n' not in suffix:
-                return text_before_cursor[last_brace_pos + 1:]
+            if '}' not in suffix and ' ' not in suffix and '\n' not in suffix: return text_before_cursor[last_brace_pos + 1:]
         return ""
-
     def keyPressEvent(self, e):
         if self._completer and self._completer.popup().isVisible():
-            if e.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab):
-                e.ignore(); return
-        
+            if e.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab): e.ignore(); return
         super().keyPressEvent(e)
         prefix = self.textUnderCursor()
-        if not self._completer or (not prefix and e.text() != '{'):
-            self._completer.popup().hide(); return
-            
-        if self._completer.completionPrefix() != prefix:
-            self._completer.setCompletionPrefix(prefix)
-            self._completer.popup().setCurrentIndex(self._completer.completionModel().index(0, 0))
-
-        cr = self.cursorRect()
-        cr.setWidth(300)
-        self._completer.complete(cr)
+        if not self._completer or (not prefix and e.text() != '{'): self._completer.popup().hide(); return
+        if self._completer.completionPrefix() != prefix: self._completer.setCompletionPrefix(prefix)
+        cr = self.cursorRect(); cr.setWidth(300); self._completer.complete(cr)
         self._completer.popup().setCurrentIndex(self._completer.completionModel().index(0, 0))
-
-# ... 나머지 클래스는 변경 없음 ...
 class VariablePanel(QGroupBox):
     def __init__(self, title="1. 변수 관리"):
         super().__init__(title)
@@ -90,8 +67,7 @@ class VariablePanel(QGroupBox):
 class TaskPanel(QGroupBox):
     def __init__(self, title="2. 태스크 관리 (실행 순서)"):
         super().__init__(title)
-        layout = QVBoxLayout(self)
-        all_check_layout = QHBoxLayout()
+        layout = QVBoxLayout(self); all_check_layout = QHBoxLayout()
         self.check_all_btn = QPushButton("모두 활성화"); self.uncheck_all_btn = QPushButton("모두 비활성화")
         all_check_layout.addWidget(self.check_all_btn); all_check_layout.addWidget(self.uncheck_all_btn); layout.addLayout(all_check_layout)
         self.list_widget = EditableListWidget(); layout.addWidget(self.list_widget)
@@ -100,8 +76,7 @@ class TaskPanel(QGroupBox):
         self.copy_btn = QPushButton("복사"); self.remove_btn = QPushButton("-")
         btn_layout.addWidget(self.up_btn); btn_layout.addWidget(self.down_btn); btn_layout.addStretch()
         btn_layout.addWidget(self.add_btn); btn_layout.addWidget(self.copy_btn); btn_layout.addWidget(self.remove_btn)
-        layout.addLayout(btn_layout)
-        layout.addWidget(QLabel("태스크 이름 ({변수명} 사용 가능):"))
+        layout.addLayout(btn_layout); layout.addWidget(QLabel("태스크 이름 ({변수명} 사용 가능):"))
         self.name_edit = QLineEdit(); layout.addWidget(self.name_edit)
         layout.addWidget(QLabel("프롬프트 템플릿 (자동완성: '{' 입력):"))
         self.prompt_edit = CompleterTextEdit(); layout.addWidget(self.prompt_edit)
@@ -110,12 +85,30 @@ class TaskPanel(QGroupBox):
         template_info_label = QLabel("({RESPONSE} 등 내장 변수와 사용자 변수 사용 가능)")
         palette = template_info_label.palette(); palette.setColor(QPalette.WindowText, Qt.gray); template_info_label.setPalette(palette)
         layout.addWidget(template_info_label)
+
 class RunPanel(QGroupBox):
     def __init__(self, title="3. 실행 및 설정"):
         super().__init__(title)
-        layout = QVBoxLayout(self); layout.addWidget(QLabel("Gemini API Key:")); self.api_key_edit = QLineEdit()
-        self.api_key_edit.setEchoMode(QLineEdit.Password); layout.addWidget(self.api_key_edit); layout.addWidget(QLabel("Gemini 모델:"))
-        self.model_name_edit = QLineEdit(); layout.addWidget(self.model_name_edit); layout.addWidget(QLabel("결과 저장 폴더:"))
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Gemini API Key:"))
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setEchoMode(QLineEdit.Password)
+        layout.addWidget(self.api_key_edit)
+        
+        layout.addWidget(QLabel("Context Cache (선택 사항):"))
+        cache_layout = QHBoxLayout()
+        self.cache_selector_combo = QComboBox()
+        self.refresh_cache_btn = QPushButton("새로고침")
+        cache_layout.addWidget(self.cache_selector_combo)
+        cache_layout.addWidget(self.refresh_cache_btn)
+        layout.addLayout(cache_layout)
+        
+        layout.addWidget(QLabel("Gemini 모델:"))
+        # *** 수정됨: QLineEdit -> QComboBox ***
+        self.model_selector_combo = QComboBox()
+        layout.addWidget(self.model_selector_combo)
+        
+        layout.addWidget(QLabel("결과 저장 폴더:"))
         folder_layout = QHBoxLayout(); self.output_folder_edit = QLineEdit(); self.select_folder_btn = QPushButton("선택")
         self.open_output_folder_btn = QPushButton("열기"); folder_layout.addWidget(self.output_folder_edit)
         folder_layout.addWidget(self.select_folder_btn); folder_layout.addWidget(self.open_output_folder_btn)

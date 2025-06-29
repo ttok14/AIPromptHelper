@@ -8,10 +8,12 @@ import re
 from dotenv import load_dotenv
 
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QSplitter, 
-                             QMessageBox, QFileDialog, QListWidgetItem)
-from PySide6.QtCore import Qt, QThreadPool, Slot, QTimer, QSortFilterProxyModel
-# *** 추가됨: QAction, QKeySequence 임포트 ***
+                             QMessageBox, QFileDialog, QListWidgetItem, QComboBox)
+from PySide6.QtCore import Qt, QThreadPool, Slot, QTimer, QSortFilterProxyModel, QRunnable, QObject, Signal
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QColor, QAction, QKeySequence
+
+import vertexai
+from vertexai.preview import caching
 
 from data_models import Variable, Task
 from ui_components import VariablePanel, TaskPanel, RunPanel, CompleterTextEdit
@@ -22,68 +24,88 @@ from task_handler import TaskHandler
 load_dotenv()
 
 BUILT_IN_VARS = {'RESPONSE'}
+SUPPORTED_MODELS = [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash"
+]
 VAR_TYPE_ROLE = Qt.UserRole + 1
 
-# ... VariableFilterProxyModel 클래스는 변경 없음 ...
 class VariableFilterProxyModel(QSortFilterProxyModel):
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self._exclude_name = ""; self._exclude_built_in = False
-    def set_exclude_name(self, name):
-        self._exclude_name = name; self.invalidateFilter()
-    def set_exclude_built_in(self, exclude):
-        self._exclude_built_in = exclude; self.invalidateFilter()
+        super().__init__(parent); self._exclude_name = ""; self._exclude_built_in = False
+    def set_exclude_name(self, name): self._exclude_name = name; self.invalidateFilter()
+    def set_exclude_built_in(self, exclude): self._exclude_built_in = exclude; self.invalidateFilter()
     def filterAcceptsRow(self, source_row, source_parent):
         index = self.sourceModel().index(source_row, 0, source_parent)
         if self._exclude_name:
-            text = self.sourceModel().data(index, Qt.DisplayRole)
-            if text == self._exclude_name: return False
+            if self.sourceModel().data(index, Qt.DisplayRole) == self._exclude_name: return False
         if self._exclude_built_in:
-            var_type = self.sourceModel().data(index, VAR_TYPE_ROLE)
-            if var_type == 'built-in': return False
+            if self.sourceModel().data(index, VAR_TYPE_ROLE) == 'built-in': return False
         return super().filterAcceptsRow(source_row, source_parent)
+
+class CacheFetcherSignals(QObject):
+    finished = Signal(dict); error = Signal(str)
+
+class CacheFetcher(QRunnable):
+    def __init__(self): super().__init__(); self.signals = CacheFetcherSignals()
+    @Slot()
+    def run(self):
+        try:
+            project_id = os.getenv("PROJECT_ID"); location = os.getenv("LOCATION"); api_key = os.getenv("GEMINI_API_KEY")
+            if not all([project_id, location, api_key]):
+                raise ValueError(".env 파일에 PROJECT_ID, LOCATION, GEMINI_API_KEY가 모두 설정되어야 합니다.")
+            vertexai.init(project=project_id, location=location)
+            caches = {}
+            for cache in caching.CachedContent.list():
+                display_name = cache.display_name if cache.display_name else os.path.basename(cache.name)
+                model_name = os.path.basename(cache.model_name)
+                caches[cache.name] = {'display_name': display_name, 'model_name': model_name}
+            self.signals.finished.emit(caches)
+        except Exception as e: self.signals.error.emit(f"캐시 목록 로드 실패: {e}")
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        # self.setWindowTitle("...") # 제목은 update_window_title에서 동적으로 설정
+        self.setWindowTitle("Gemini 워크플로우 자동화 도구") # 초기 제목, new_project에서 설정됨
         self.setGeometry(100, 100, 1400, 900)
         
-        # --- 상태 관리 변수 ---
-        self.variables = {}; self.tasks = {}
-        self.is_loading_state = False
-        self.current_project_path = None
-        self.is_dirty = False
-        
-        # --- UI 및 핸들러 ---
+        self.config_file = "workspace.json"; self.variables = {}; self.tasks = {}; self.is_loading_state = False
+        self.current_project_path = None; self.is_dirty = False
+        self.thread_pool = QThreadPool(); self.current_runner = None
         self.var_panel = VariablePanel(); self.task_panel = TaskPanel(); self.run_panel = RunPanel()
         self.variable_handler = VariableHandler(self.var_panel, self.variables, BUILT_IN_VARS)
         self.task_handler = TaskHandler(self.task_panel, self.tasks)
-        
-        # --- 모델 및 기타 ---
-        self.thread_pool = QThreadPool(); self.current_runner = None
+        self.save_timer = QTimer(self)
         self.all_vars_model = QStandardItemModel(self)
-        self.prompt_proxy_model = VariableFilterProxyModel(self)
-        self.prompt_proxy_model.setSourceModel(self.all_vars_model)
-        self.prompt_proxy_model.set_exclude_built_in(True)
-        self.variable_proxy_model = VariableFilterProxyModel(self)
-        self.variable_proxy_model.setSourceModel(self.all_vars_model)
-        self.variable_proxy_model.set_exclude_built_in(True)
+        self.prompt_proxy_model = VariableFilterProxyModel(self); self.prompt_proxy_model.setSourceModel(self.all_vars_model); self.prompt_proxy_model.set_exclude_built_in(True)
+        self.variable_proxy_model = VariableFilterProxyModel(self); self.variable_proxy_model.setSourceModel(self.all_vars_model); self.variable_proxy_model.set_exclude_built_in(True)
         self.highlighter_editors = []
-
-        # --- 초기화 순서 변경 ---
-        self.setup_ui()
-        self.setup_menu_bar() # 메뉴바 설정
-        self.connect_signals()
-        
-        self.load_env_settings()
-        self.new_project() # 시작 시 빈 프로젝트로 시작
-
+        self.setup_ui(); self.setup_menu_bar(); self.connect_signals()
+        self.load_env_settings(); self.new_project()
         self.log(f"PySide6 워크플로우 자동화 도구 시작. 현재 {self.thread_pool.maxThreadCount()}개의 스레드 사용 가능.")
 
-    # --- UI 설정 ---
+    # *** 추가됨: 누락되었던 함수 ***
+    def load_env_settings(self):
+        """환경 변수에서 API 키, 프로젝트 ID, 위치를 찾아 설정합니다."""
+        api_key = os.getenv("GEMINI_API_KEY")
+        project_id = os.getenv("PROJECT_ID")
+        location = os.getenv("LOCATION")
+        
+        if api_key:
+            self.run_panel.api_key_edit.setText(api_key)
+            self.log(".env: API 키를 불러왔습니다.")
+        else:
+            self.run_panel.api_key_edit.clear()
+            self.log(".env: GEMINI_API_KEY가 설정되지 않았습니다.")
+        
+        if project_id and location:
+            self.log(f".env: Project ID({project_id})와 Location({location})을 불러왔습니다.")
+        else:
+            self.log(".env: Context Caching에 필요한 PROJECT_ID 또는 LOCATION이 설정되지 않았습니다.")
+            
     def setup_ui(self):
-        # ... (이전과 동일) ...
         splitter = QSplitter(Qt.Horizontal); splitter.addWidget(self.var_panel); splitter.addWidget(self.task_panel); splitter.addWidget(self.run_panel)
         splitter.setSizes([350, 600, 450]); central_widget = QWidget(); layout = QHBoxLayout(central_widget)
         layout.addWidget(splitter); self.setCentralWidget(central_widget)
@@ -94,188 +116,161 @@ class MainWindow(QMainWindow):
         for editor in self.highlighter_editors:
             editor.completer().setCaseSensitivity(Qt.CaseInsensitive)
             editor.completer().setFilterMode(Qt.MatchContains)
-        if not os.path.exists("workspace.json"): # 임시 파일 이름 확인
-            self.run_panel.model_name_edit.setText("gemini-1.5-flash-latest")
-            self.run_panel.output_folder_edit.setText(os.path.join(os.getcwd(), "output_pyside"))
-            self.run_panel.output_ext_edit.setText(".md")
-            
-    # *** 추가됨: 메뉴바 생성 및 설정 ***
-    def setup_menu_bar(self):
-        menu_bar = self.menuBar()
-        file_menu = menu_bar.addMenu("&File")
-
-        new_action = QAction("&New Project", self)
-        new_action.setShortcut(QKeySequence.StandardKey.New)
-        new_action.triggered.connect(self.new_project_action)
-        file_menu.addAction(new_action)
-
-        open_action = QAction("&Open Project...", self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self.open_project_action)
-        file_menu.addAction(open_action)
+        self.run_panel.model_selector_combo.addItems(SUPPORTED_MODELS)
         
+    def setup_menu_bar(self):
+        menu_bar = self.menuBar(); file_menu = menu_bar.addMenu("&File")
+        new_action = QAction("&New Project", self); new_action.setShortcut(QKeySequence.StandardKey.New); new_action.triggered.connect(self.new_project_action); file_menu.addAction(new_action)
+        open_action = QAction("&Open Project...", self); open_action.setShortcut(QKeySequence.StandardKey.Open); open_action.triggered.connect(self.open_project_action); file_menu.addAction(open_action)
         file_menu.addSeparator()
-
-        save_action = QAction("&Save", self)
-        save_action.setShortcut(QKeySequence.StandardKey.Save)
-        save_action.triggered.connect(self.save_project)
-        file_menu.addAction(save_action)
-
-        save_as_action = QAction("Save &As...", self)
-        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
-        save_as_action.triggered.connect(self.save_as_project)
-        file_menu.addAction(save_as_action)
-
+        save_action = QAction("&Save", self); save_action.setShortcut(QKeySequence.StandardKey.Save); save_action.triggered.connect(self.save_project); file_menu.addAction(save_action)
+        save_as_action = QAction("Save &As...", self); save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs); save_as_action.triggered.connect(self.save_as_project); file_menu.addAction(save_as_action)
         file_menu.addSeparator()
-
-        exit_action = QAction("E&xit", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+        exit_action = QAction("E&xit", self); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
         
     def connect_signals(self):
-        self.variable_handler.connect_signals()
-        self.task_handler.connect_signals()
-        
-        # *** 수정됨: 데이터 변경 시 mark_as_dirty 호출 ***
+        self.variable_handler.connect_signals(); self.task_handler.connect_signals()
         self.variable_handler.signals.state_changed.connect(self.mark_as_dirty)
         self.variable_handler.signals.variables_updated.connect(self.update_completer_model_and_filter)
         self.variable_handler.signals.log_message.connect(self.log)
-        
         self.task_handler.signals.state_changed.connect(self.mark_as_dirty)
         self.task_handler.signals.log_message.connect(self.log)
-
-        # 실행 패널의 설정 변경도 dirty 상태로 만듦
-        for widget in [self.run_panel.model_name_edit, self.run_panel.output_folder_edit, 
+        self.run_panel.refresh_cache_btn.clicked.connect(self.refresh_caches)
+        self.run_panel.cache_selector_combo.currentIndexChanged.connect(self.on_cache_selected)
+        for widget in [self.run_panel.model_selector_combo, self.run_panel.output_folder_edit, 
                        self.run_panel.output_ext_edit, self.run_panel.log_folder_edit]:
-            widget.editingFinished.connect(self.mark_as_dirty)
-
-        # MainWindow가 직접 처리하는 시그널들
-        self.run_panel.run_btn.clicked.connect(self.start_execution)
-        self.run_panel.stop_btn.clicked.connect(self.stop_execution)
+            if isinstance(widget, QComboBox): widget.currentIndexChanged.connect(self.mark_as_dirty)
+            else: widget.editingFinished.connect(self.mark_as_dirty)
+        self.run_panel.run_btn.clicked.connect(self.start_execution); self.run_panel.stop_btn.clicked.connect(self.stop_execution)
         self.run_panel.clear_log_btn.clicked.connect(self.clear_log)
         self.run_panel.select_folder_btn.clicked.connect(lambda: self.select_folder_for(self.run_panel.output_folder_edit))
         self.run_panel.open_output_folder_btn.clicked.connect(self.open_output_folder)
         self.run_panel.select_log_folder_btn.clicked.connect(lambda: self.select_folder_for(self.run_panel.log_folder_edit))
         self.run_panel.open_log_folder_btn.clicked.connect(self.open_log_folder)
 
-    # --- 상태 및 프로젝트 관리 함수 ---
+    @Slot()
+    def refresh_caches(self):
+        project_id = os.getenv("PROJECT_ID"); location = os.getenv("LOCATION")
+        if not project_id or not location:
+            QMessageBox.warning(self, "환경 변수 오류", ".env 파일에 PROJECT_ID와 LOCATION을 설정해야 합니다."); return
+        self.log("캐시 목록을 불러오는 중..."); self.run_panel.refresh_cache_btn.setEnabled(False)
+        fetcher = CacheFetcher(); fetcher.signals.finished.connect(self.on_caches_fetched)
+        fetcher.signals.error.connect(self.on_cache_fetch_error); self.thread_pool.start(fetcher)
+        
+    @Slot(dict)
+    def on_caches_fetched(self, caches):
+        self.log(f"{len(caches)}개의 캐시를 찾았습니다."); self.run_panel.refresh_cache_btn.setEnabled(True)
+        combo = self.run_panel.cache_selector_combo; combo.blockSignals(True)
+        current_selection = combo.currentData(); combo.clear()
+        combo.addItem("(캐시 사용 안 함)", None)
+        for name, data in sorted(caches.items(), key=lambda item: item[1]['display_name']):
+            display_text = f"{data['display_name']} ({data['model_name']})"
+            combo.addItem(display_text, {'name': name, 'model': data['model_name']})
+        if current_selection:
+            index = combo.findData(current_selection)
+            if index != -1: combo.setCurrentIndex(index)
+        combo.blockSignals(False); self.on_cache_selected(combo.currentIndex())
+        
+    @Slot(str)
+    def on_cache_fetch_error(self, error_msg):
+        self.log(error_msg); QMessageBox.critical(self, "캐시 로드 오류", error_msg)
+        self.run_panel.refresh_cache_btn.setEnabled(True)
+        
+    @Slot(int)
+    def on_cache_selected(self, index):
+        if index == -1: return
+        combo = self.run_panel.cache_selector_combo; cache_data = combo.itemData(index)
+        model_combo = self.run_panel.model_selector_combo
+        if cache_data:
+            if model_combo.findText(cache_data['model']) == -1: model_combo.addItem(cache_data['model'])
+            model_combo.setCurrentText(cache_data['model'])
+            model_combo.setEnabled(False)
+            model_combo.setToolTip("Context Cache 사용 시 모델은 자동으로 선택됩니다.")
+        else:
+            for i in range(model_combo.count() -1, -1, -1):
+                if model_combo.itemText(i) not in SUPPORTED_MODELS: model_combo.removeItem(i)
+            model_combo.setEnabled(True); model_combo.setToolTip("")
+        self.mark_as_dirty()
+        
     @Slot()
     def mark_as_dirty(self):
-        """데이터가 변경되었음을 표시합니다."""
         if self.is_loading_state: return
-        self.is_dirty = True
-        self.update_window_title()
-
+        self.is_dirty = True; self.update_window_title()
+        
     def update_window_title(self):
-        """현재 프로젝트 상태에 맞게 윈도우 제목을 업데이트합니다."""
         title = "Untitled Project"
-        if self.current_project_path:
-            title = os.path.basename(self.current_project_path)
-        
-        if self.is_dirty:
-            title += "*"
-            
+        if self.current_project_path: title = os.path.basename(self.current_project_path)
+        if self.is_dirty: title += "*"
         self.setWindowTitle(f"{title} - Gemini 워크플로우 자동화 도구")
-
+        
     def check_before_proceed(self, action_name="작업"):
-        """다른 작업을 진행하기 전에 저장되지 않은 변경사항을 확인합니다."""
-        if not self.is_dirty:
-            return True # 저장할 것 없으면 계속 진행
+        if not self.is_dirty: return True
+        reply = QMessageBox.question(self, "변경 내용 저장", f"'{action_name}'을(를) 계속하기 전에 변경 내용을 저장하시겠습니까?",
+                                     QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+        if reply == QMessageBox.StandardButton.Save: return self.save_project()
+        elif reply == QMessageBox.StandardButton.Cancel: return False
+        return True
         
-        reply = QMessageBox.question(self, "변경 내용 저장", 
-                                     f"'{action_name}'을(를) 계속하기 전에 변경 내용을 저장하시겠습니까?",
-                                     QMessageBox.StandardButton.Save | 
-                                     QMessageBox.StandardButton.Discard | 
-                                     QMessageBox.StandardButton.Cancel)
-
-        if reply == QMessageBox.StandardButton.Save:
-            return self.save_project() # 저장 성공 여부를 반환
-        elif reply == QMessageBox.StandardButton.Cancel:
-            return False # 작업 취소
-        
-        return True # Discard (버리기)
-
     @Slot()
     def new_project_action(self):
-        if self.check_before_proceed("새 프로젝트 생성"):
-            self.new_project()
-
+        if self.check_before_proceed("새 프로젝트 생성"): self.new_project()
+        
     def new_project(self):
-        """모든 작업 공간을 깨끗하게 초기화합니다."""
-        self.is_loading_state = True
-        self.variable_handler.is_loading = True
-        self.task_handler.is_loading = True
-        
-        self.var_panel.list_widget.clear(); self.variables.clear()
-        self.task_panel.list_widget.clear(); self.tasks.clear()
-        
-        # UI 패널 초기화
-        self.task_handler.on_task_selected(None, None)
-        self.variable_handler.on_var_selected(None, None)
-
-        self.current_project_path = None
-        self.is_dirty = False
-        self.update_window_title()
-        self.update_completer_model_and_filter()
-
-        self.is_loading_state = False
-        self.variable_handler.is_loading = False
-        self.task_handler.is_loading = False
+        self.is_loading_state = True; self.variable_handler.is_loading = True; self.task_handler.is_loading = True
+        self.var_panel.list_widget.clear(); self.variables.clear(); self.task_panel.list_widget.clear(); self.tasks.clear()
+        self.run_panel.cache_selector_combo.clear()
+        self.task_handler.on_task_selected(None, None); self.variable_handler.on_var_selected(None, None)
+        self.current_project_path = None; self.is_dirty = False; self.update_window_title(); self.update_completer_model_and_filter()
+        # 새 프로젝트 시 모델 선택 초기화
+        if len(SUPPORTED_MODELS) > 0:
+            self.run_panel.model_selector_combo.setCurrentText(SUPPORTED_MODELS[0])
+        self.is_loading_state = False; self.variable_handler.is_loading = False; self.task_handler.is_loading = False
         self.log("새 프로젝트가 생성되었습니다.")
-
+        
     @Slot()
     def open_project_action(self):
         if self.check_before_proceed("프로젝트 열기"):
             path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", "", "Workflow Files (*.json);;All Files (*)")
-            if path:
-                self.load_state(path)
-
-    @Slot()
-    def save_project(self):
-        """현재 프로젝트를 저장합니다. 경로가 없으면 다른 이름으로 저장을 호출합니다."""
-        if self.current_project_path is None:
-            return self.save_as_project()
-        else:
-            return self.save_state(self.current_project_path)
+            if path: self.load_state(path)
             
     @Slot()
+    def save_project(self):
+        if self.current_project_path is None: return self.save_as_project()
+        else: return self.save_state(self.current_project_path)
+        
+    @Slot()
     def save_as_project(self):
-        """다른 이름으로 프로젝트를 저장합니다."""
         path, _ = QFileDialog.getSaveFileName(self, "다른 이름으로 저장", "", "Workflow Files (*.json);;All Files (*)")
-        if path:
-            self.current_project_path = path
-            return self.save_state(path)
-        return False # 사용자가 취소한 경우
-
-    # --- 파일 I/O 로직 (경로를 인자로 받도록 수정) ---
+        if path: self.current_project_path = path; return self.save_state(path)
+        return False
+        
     def save_state(self, path):
         try:
             var_order_ids = [self.var_panel.list_widget.item(i).data(Qt.UserRole) for i in range(self.var_panel.list_widget.count())]
             task_order_ids = [self.task_panel.list_widget.item(i).data(Qt.UserRole) for i in range(self.task_panel.list_widget.count())]
+            cache_data = self.run_panel.cache_selector_combo.currentData()
             state_data = {
                 'variables': [self.variables[var_id].to_dict() for var_id in var_order_ids if var_id in self.variables],
                 'tasks': [self.tasks[task_id].to_dict() for task_id in task_order_ids if task_id in self.tasks],
-                'settings': { 'model_name': self.run_panel.model_name_edit.text(), 
-                              'output_folder': self.run_panel.output_folder_edit.text(), 
-                              'output_extension': self.run_panel.output_ext_edit.text(), 
-                              'log_folder': self.run_panel.log_folder_edit.text() }}
+                'settings': { 
+                    'model_name': self.run_panel.model_selector_combo.currentText(),
+                    'context_cache': cache_data, 
+                    'output_folder': self.run_panel.output_folder_edit.text(), 'output_extension': self.run_panel.output_ext_edit.text(), 
+                    'log_folder': self.run_panel.log_folder_edit.text() 
+                }}
             with open(path, 'w', encoding='utf-8') as f: json.dump(state_data, f, indent=4, ensure_ascii=False)
-            
-            self.is_dirty = False
-            self.update_window_title()
-            self.log(f"프로젝트 '{os.path.basename(path)}'가 저장되었습니다.")
-            return True
+            self.is_dirty = False; self.update_window_title(); self.log(f"프로젝트 '{os.path.basename(path)}'가 저장되었습니다."); return True
         except Exception as e:
-            self.log(f"프로젝트 저장 실패: {e}")
-            QMessageBox.critical(self, "저장 오류", f"프로젝트를 저장하는 중 오류가 발생했습니다:\n{e}")
-            return False
-
+            self.log(f"프로젝트 저장 실패: {e}"); QMessageBox.critical(self, "저장 오류", f"프로젝트를 저장하는 중 오류가 발생했습니다:\n{e}"); return False
+            
     def load_state(self, path):
-        self.new_project() # 불러오기 전에 현재 작업 공간을 깨끗이 비움
-        self.is_loading_state = True; self.variable_handler.is_loading = True; self.task_handler.is_loading = True
+        # 로드 시에는 new_project를 호출하지 않고, 성공 시에만 상태를 완전히 덮어씀
         try:
             with open(path, 'r', encoding='utf-8') as f: state_data = json.load(f)
-            # ... (이하 로직은 이전과 동일) ...
+            
+            self.is_loading_state = True; self.variable_handler.is_loading = True; self.task_handler.is_loading = True
+            self.new_project() # 성공적으로 파일을 읽었을 때만 현재 작업 공간 초기화
+
             for var_data in state_data.get('variables', []):
                 if var_data.get('name', '').upper() in BUILT_IN_VARS: continue
                 var = Variable(id=var_data.get('id'), name=var_data.get('name'), value=var_data.get('value'))
@@ -283,71 +278,60 @@ class MainWindow(QMainWindow):
                 self.variables[var.id] = var; item = QListWidgetItem(var.name); item.setData(Qt.UserRole, var.id)
                 item.setFlags(item.flags() | Qt.ItemIsEditable); self.var_panel.list_widget.addItem(item)
             for task_data in state_data.get('tasks', []):
-                task = Task(id=task_data.get('id'), name=task_data.get('name'), 
-                            prompt=task_data.get('prompt'), enabled=task_data.get('enabled', True),
-                            output_template=task_data.get('output_template', ''))
+                task = Task(id=task_data.get('id'), name=task_data.get('name'), prompt=task_data.get('prompt'), 
+                            enabled=task_data.get('enabled', True), output_template=task_data.get('output_template', ''))
                 if not task.id or not task.name: continue
                 self.tasks[task.id] = task; item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
                 item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked); self.task_panel.list_widget.addItem(item)
+            
             settings = state_data.get('settings', {}); 
-            self.run_panel.model_name_edit.setText(settings.get('model_name', 'gemini-1.5-flash-latest'))
             self.run_panel.output_folder_edit.setText(settings.get('output_folder', os.path.join(os.getcwd(), "output_pyside")))
             self.run_panel.output_ext_edit.setText(settings.get('output_extension', '.md'))
             self.run_panel.log_folder_edit.setText(settings.get('log_folder', ''))
             
-            self.current_project_path = path
-            self.is_dirty = False
-            self.update_window_title()
-            self.update_completer_model_and_filter()
-            self.log(f"프로젝트 '{os.path.basename(path)}'를 불러왔습니다.")
-            
+            cache_data = settings.get('context_cache')
+            if cache_data and cache_data.get('name'):
+                combo = self.run_panel.cache_selector_combo
+                combo.blockSignals(True)
+                display_text = f"{cache_data.get('display_name', '...')} ({cache_data.get('model', '...')})"
+                # findData로 찾는 대신, 임시로 아이템을 추가해두고 refresh_caches가 덮어쓰게 함
+                if combo.findData(cache_data) == -1:
+                    combo.addItem(display_text, cache_data)
+                combo.setCurrentIndex(combo.findData(cache_data))
+                self.run_panel.model_selector_combo.setCurrentText(cache_data.get('model', ''))
+                combo.blockSignals(False)
+            else:
+                default_model = SUPPORTED_MODELS[0] if SUPPORTED_MODELS else ""
+                self.run_panel.model_selector_combo.setCurrentText(settings.get('model_name', default_model))
+
+            self.current_project_path = path; self.is_dirty = False
+            self.update_window_title(); self.update_completer_model_and_filter()
+            self.log(f"프로젝트 '{os.path.basename(path)}'를 불러왔습니다."); self.refresh_caches()
         except Exception as e:
-            self.new_project() # 로드 실패 시 깨끗한 상태로 복귀
             QMessageBox.critical(self, "프로젝트 열기 오류", f"'{os.path.basename(path)}' 파일을 불러오는 중 오류가 발생했습니다:\n{e}")
         finally: 
             self.is_loading_state = False; self.variable_handler.is_loading = False; self.task_handler.is_loading = False
-
+            
     def closeEvent(self, event):
-        if self.check_before_proceed("프로그램 종료"):
-            # 전역 설정 저장 (예: 창 크기) - 나중에 구현
-            event.accept()
-        else:
-            event.ignore()
+        if self.check_before_proceed("프로그램 종료"): event.accept()
+        else: event.ignore()
 
-    # --- 기타 유틸리티 및 슬롯 ---
-    # ... (이전과 동일) ...
-    def load_env_settings(self):
-        api_key = os.getenv("GEMINI_API_KEY"); project_id = os.getenv("PROJECT_ID"); location = os.getenv("LOCATION")
-        if api_key: self.run_panel.api_key_edit.setText(api_key); self.log(".env: API 키를 불러왔습니다.")
-        else: self.log(".env: GEMINI_API_KEY가 설정되지 않았습니다.")
-        if project_id and location: self.log(f".env: Project ID({project_id})와 Location({location})을 불러왔습니다.")
-        else: self.log(".env: Context Caching에 필요한 PROJECT_ID 또는 LOCATION이 설정되지 않았습니다.")
-    def select_folder_for(self, line_edit):
-        folder = QFileDialog.getExistingDirectory(self, "폴더 선택")
-        if folder: line_edit.setText(folder); self.mark_as_dirty()
-    # (나머지 함수들은 이전 버전에서 복사-붙여넣기 하면 됩니다)
+    # ... 이하 함수들은 이전 버전과 동일 ...
     @Slot()
     def update_completer_model_and_filter(self):
-        self.all_vars_model.clear()
-        valid_var_names = BUILT_IN_VARS.copy()
-        for var in self.variables.values():
-            valid_var_names.add(var.name)
+        self.all_vars_model.clear(); valid_var_names = BUILT_IN_VARS.copy()
+        for var in self.variables.values(): valid_var_names.add(var.name)
         for var_name in sorted(list(BUILT_IN_VARS)):
             item = QStandardItem(var_name); item.setData(QColor("#4a90e2"), Qt.ForegroundRole)
-            item.setToolTip(f"내장 변수: {var_name}"); item.setData('built-in', VAR_TYPE_ROLE)
-            self.all_vars_model.appendRow(item)
+            item.setToolTip(f"내장 변수: {var_name}"); item.setData('built-in', VAR_TYPE_ROLE); self.all_vars_model.appendRow(item)
         for var in sorted(self.variables.values(), key=lambda v: v.name):
-            item = QStandardItem(var.name); item.setData('user', VAR_TYPE_ROLE)
-            self.all_vars_model.appendRow(item)
+            item = QStandardItem(var.name); item.setData('user', VAR_TYPE_ROLE); self.all_vars_model.appendRow(item)
         self.update_variable_completer_filter()
-        for editor in self.highlighter_editors:
-            editor.highlighter.set_valid_variables(valid_var_names)
+        for editor in self.highlighter_editors: editor.highlighter.set_valid_variables(valid_var_names)
     def update_variable_completer_filter(self):
         current_item = self.var_panel.list_widget.currentItem()
-        if current_item:
-            current_var_name = current_item.text()
-            self.variable_proxy_model.set_exclude_name(current_var_name)
+        if current_item: self.variable_proxy_model.set_exclude_name(current_item.text())
         else: self.variable_proxy_model.set_exclude_name("")
     @Slot(str)
     def log(self, message): self.run_panel.log_viewer.append(message)
@@ -355,29 +339,37 @@ class MainWindow(QMainWindow):
     def clear_log(self): self.run_panel.log_viewer.clear(); self.log("로그가 삭제되었습니다.")
     def set_ui_enabled(self, enabled):
         self.var_panel.setEnabled(enabled); self.task_panel.setEnabled(enabled)
-        for widget in [self.run_panel.api_key_edit, self.run_panel.model_name_edit, self.run_panel.output_folder_edit, 
-                       self.run_panel.select_folder_btn, self.run_panel.open_output_folder_btn, self.run_panel.output_ext_edit,
-                       self.run_panel.log_folder_edit, self.run_panel.select_log_folder_btn, self.run_panel.open_log_folder_btn, 
-                       self.run_panel.clear_log_btn]:
+        for widget in [self.run_panel.api_key_edit, self.run_panel.output_folder_edit, self.run_panel.select_folder_btn, 
+                       self.run_panel.open_output_folder_btn, self.run_panel.output_ext_edit, self.run_panel.log_folder_edit, 
+                       self.run_panel.select_log_folder_btn, self.run_panel.open_log_folder_btn, self.run_panel.clear_log_btn, 
+                       self.run_panel.cache_selector_combo, self.run_panel.refresh_cache_btn, self.run_panel.model_selector_combo]:
             widget.setEnabled(enabled)
         if enabled: self.run_panel.run_btn.show(); self.run_panel.stop_btn.hide()
         else: self.run_panel.run_btn.hide(); self.run_panel.stop_btn.show()
+        if self.run_panel.cache_selector_combo.currentData(): self.run_panel.model_selector_combo.setEnabled(False)
     def start_execution(self):
         api_key = self.run_panel.api_key_edit.text()
         if not api_key: QMessageBox.warning(self, "오류", "Gemini API 키를 입력해주세요."); return
+        cache_data = self.run_panel.cache_selector_combo.currentData()
+        cache_name = cache_data['name'] if cache_data else None
+        model_name = self.run_panel.model_selector_combo.currentText()
         tasks_to_run = [self.tasks[self.task_panel.list_widget.item(i).data(Qt.UserRole)] 
                         for i in range(self.task_panel.list_widget.count()) if self.task_panel.list_widget.item(i).checkState() == Qt.Checked]
         if not tasks_to_run: QMessageBox.warning(self, "오류", "실행할 활성화된 태스크가 없습니다."); return
         self.set_ui_enabled(False)
-        self.current_runner = TaskRunner(api_key=api_key, model_name=self.run_panel.model_name_edit.text(), variables=self.variables, 
+        self.current_runner = TaskRunner(api_key=api_key, model_name=model_name, variables=self.variables, 
                                        tasks_in_order=tasks_to_run, output_folder=self.run_panel.output_folder_edit.text(),
-                                       output_extension=self.run_panel.output_ext_edit.text(), log_folder=self.run_panel.log_folder_edit.text())
+                                       output_extension=self.run_panel.output_ext_edit.text(), log_folder=self.run_panel.log_folder_edit.text(),
+                                       cached_content_name=cache_name)
         self.current_runner.signals.log_message.connect(self.log)
         self.current_runner.signals.error.connect(lambda e: QMessageBox.critical(self, "실행 오류", str(e)))
         self.current_runner.signals.finished.connect(self.on_execution_finished); self.thread_pool.start(self.current_runner)
     def stop_execution(self):
         if self.current_runner: self.log("사용자 중지 요청..."); self.current_runner.stop()
     def on_execution_finished(self): self.set_ui_enabled(True); self.current_runner = None
+    def select_folder_for(self, line_edit):
+        folder = QFileDialog.getExistingDirectory(self, "폴더 선택");
+        if folder: line_edit.setText(folder); self.mark_as_dirty()
     def open_output_folder(self): self._open_folder_at_path(self.run_panel.output_folder_edit.text())
     def open_log_folder(self): self._open_folder_at_path(self.run_panel.log_folder_edit.text())
     def load_last_log_file(self, log_folder):
