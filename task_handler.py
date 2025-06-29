@@ -25,13 +25,13 @@ class TaskHandler(QObject):
         self.ui.list_widget.model().rowsMoved.connect(lambda: self.signals.log_message.emit("태스크 목록 순서가 변경되었습니다."))
         self.ui.list_widget.model().rowsMoved.connect(self.signals.state_changed)
         self.ui.name_edit.editingFinished.connect(self.update_details_from_panel)
-        # *** 수정됨: prompt와 output_template 변경 시그널 분리 ***
+        # *** 수정됨: 슬롯 연결 대상 함수에 @Slot() 데코레이터가 필요함 ***
         self.ui.prompt_edit.textChanged.connect(self.update_prompt_from_panel)
         self.ui.output_template_edit.textChanged.connect(self.update_template_from_panel)
         self.ui.check_all_btn.clicked.connect(lambda: self.set_all_tasks_checked(True))
         self.ui.uncheck_all_btn.clicked.connect(lambda: self.set_all_tasks_checked(False))
     
-    # ... _generate_unique_name, add, remove, copy, move는 동일 ...
+    # ... _generate_unique_name, add_task, remove_task, copy_task, move_task, update_details_from_panel 등은 변경 없음 ...
     def _generate_unique_name(self, base_name, existing_names):
         if base_name not in existing_names: return base_name
         counter = 2
@@ -80,8 +80,6 @@ class TaskHandler(QObject):
         elif direction == 'down' and current_row < list_widget.count() - 1: new_row = current_row + 1
         if new_row != -1:
             list_widget.takeItem(current_row); list_widget.insertItem(new_row, item); list_widget.setCurrentRow(new_row)
-
-    # *** 수정됨: name, prompt, template 업데이트 로직 분리 ***
     @Slot()
     def update_details_from_panel(self):
         item = self.ui.list_widget.currentItem()
@@ -97,7 +95,8 @@ class TaskHandler(QObject):
                     self.ui.name_edit.setText(task.name)
                     return
                 task.name = new_name; item.setText(new_name); self.signals.state_changed.emit()
-
+    
+    # *** 수정됨: @Slot() 데코레이터 추가 ***
     @Slot()
     def update_prompt_from_panel(self):
         item = self.ui.list_widget.currentItem()
@@ -107,6 +106,7 @@ class TaskHandler(QObject):
             self.data[task_id].prompt = self.ui.prompt_edit.toPlainText()
             self.signals.state_changed.emit()
 
+    # *** 수정됨: @Slot() 데코레이터 추가 ***
     @Slot()
     def update_template_from_panel(self):
         item = self.ui.list_widget.currentItem()
@@ -116,26 +116,6 @@ class TaskHandler(QObject):
             self.data[task_id].output_template = self.ui.output_template_edit.toPlainText()
             self.signals.state_changed.emit()
 
-    @Slot(QListWidgetItem, QListWidgetItem)
-    def on_task_selected(self, current, previous):
-        self.is_loading = True
-        is_item_selected = current is not None
-        for btn in [self.ui.remove_btn, self.ui.copy_btn, self.ui.up_btn, self.ui.down_btn]: btn.setEnabled(is_item_selected)
-        self.ui.name_edit.setEnabled(is_item_selected)
-        self.ui.prompt_edit.setEnabled(is_item_selected)
-        self.ui.output_template_edit.setEnabled(is_item_selected) # template 필드도 제어
-        if not current:
-            self.ui.name_edit.clear(); self.ui.prompt_edit.clear(); self.ui.output_template_edit.clear()
-        else:
-            task_id = current.data(Qt.UserRole)
-            if task_id in self.data:
-                task = self.data[task_id]
-                self.ui.name_edit.setText(task.name)
-                self.ui.prompt_edit.setPlainText(task.prompt)
-                self.ui.output_template_edit.setPlainText(task.output_template)
-        self.is_loading = False
-    
-    # ... on_item_changed, set_all_tasks_checked 는 동일 ...
     @Slot(QListWidgetItem)
     def on_item_changed(self, item):
         if self.is_loading or not item: return
@@ -154,6 +134,7 @@ class TaskHandler(QObject):
             if task.enabled != new_enabled_state:
                 task.enabled = new_enabled_state; action_text = "활성화" if new_enabled_state else "비활성화"
                 self.signals.log_message.emit(f"태스크 '{task.name}' {action_text}됨"); self.signals.state_changed.emit()
+
     @Slot(bool)
     def set_all_tasks_checked(self, checked):
         state = Qt.Checked if checked else Qt.Unchecked; action_text = "활성화" if checked else "비활성화"
@@ -164,3 +145,22 @@ class TaskHandler(QObject):
             if task_id in self.data: self.data[task_id].enabled = checked
         self.ui.list_widget.blockSignals(False)
         self.signals.log_message.emit(f"모든 태스크를 {action_text}했습니다."); self.signals.state_changed.emit()
+
+    @Slot(QListWidgetItem, QListWidgetItem)
+    def on_task_selected(self, current, previous):
+        self.is_loading = True
+        is_item_selected = current is not None
+        for btn in [self.ui.remove_btn, self.ui.copy_btn, self.ui.up_btn, self.ui.down_btn]: btn.setEnabled(is_item_selected)
+        self.ui.name_edit.setEnabled(is_item_selected)
+        self.ui.prompt_edit.setEnabled(is_item_selected)
+        self.ui.output_template_edit.setEnabled(is_item_selected)
+        if not current:
+            self.ui.name_edit.clear(); self.ui.prompt_edit.clear(); self.ui.output_template_edit.clear()
+        else:
+            task_id = current.data(Qt.UserRole)
+            if task_id in self.data:
+                task = self.data[task_id]
+                self.ui.name_edit.setText(task.name)
+                self.ui.prompt_edit.setPlainText(task.prompt)
+                self.ui.output_template_edit.setPlainText(task.output_template)
+        self.is_loading = False

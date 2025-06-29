@@ -6,7 +6,11 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, Q
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QTextCursor, QPalette, QIcon
 
+# *** 신규 임포트 ***
+from syntax_highlighter import VariableSyntaxHighlighter
+
 class EditableListWidget(QListWidget):
+    # ... (변경 없음) ...
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDragDropMode(QAbstractItemView.InternalMove); self.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -23,7 +27,9 @@ class CompleterTextEdit(QTextEdit):
         self._completer = QCompleter(self)
         self._completer.setWidget(self)
         self._completer.setCompletionMode(QCompleter.PopupCompletion)
-        # visibleChanged 시그널 연결 제거
+        
+        # *** 수정됨: Syntax Highlighter 생성 및 연결 ***
+        self.highlighter = VariableSyntaxHighlighter(self.document())
 
     def setModel(self, model):
         if self._completer.model():
@@ -34,7 +40,7 @@ class CompleterTextEdit(QTextEdit):
             self._completer.activated.connect(self.insertCompletion)
 
     def completer(self): return self._completer
-
+    
     @Slot(str)
     def insertCompletion(self, completion):
         tc = self.textCursor(); prefix = self.completer().completionPrefix()
@@ -62,14 +68,12 @@ class CompleterTextEdit(QTextEdit):
             
         if self._completer.completionPrefix() != prefix:
             self._completer.setCompletionPrefix(prefix)
+            self._completer.popup().setCurrentIndex(self._completer.completionModel().index(0, 0))
 
-        # *** 수정됨: complete() 호출 직후, 팝업의 현재 행을 0으로 설정 ***
         cr = self.cursorRect()
-        cr.setWidth(300) 
+        cr.setWidth(300)
         self._completer.complete(cr)
-        # 팝업이 나타나도록 요청한 후, 즉시 첫 번째 항목을 선택하도록 설정
         self._completer.popup().setCurrentIndex(self._completer.completionModel().index(0, 0))
-
 
 # ... 나머지 클래스는 변경 없음 ...
 class VariablePanel(QGroupBox):
