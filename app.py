@@ -5,20 +5,25 @@ import json
 import sys
 import subprocess
 import re
+from dotenv import load_dotenv
+
+# ... (다른 임포트)
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QSplitter, 
                              QMessageBox, QFileDialog, QListWidgetItem)
 from PySide6.QtCore import Qt, QThreadPool, Slot, QTimer, QSortFilterProxyModel
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QColor
-
 from data_models import Variable, Task
 from ui_components import VariablePanel, TaskPanel, RunPanel, CompleterTextEdit
 from core_logic import TaskRunner
 from variable_handler import VariableHandler
 from task_handler import TaskHandler
 
+load_dotenv()
+
 BUILT_IN_VARS = {'RESPONSE'}
 VAR_TYPE_ROLE = Qt.UserRole + 1
 
+# ... (VariableFilterProxyModel 클래스는 변경 없음) ...
 class VariableFilterProxyModel(QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -37,12 +42,13 @@ class VariableFilterProxyModel(QSortFilterProxyModel):
             if var_type == 'built-in': return False
         return super().filterAcceptsRow(source_row, source_parent)
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v6.1 (하이라이트 버그 수정)")
+        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v7.1 (.env 확장)")
+        # ... (이하 __init__ 동일) ...
         self.setGeometry(100, 100, 1400, 900)
-        
         self.config_file = "workspace.json"; self.variables = {}; self.tasks = {}; self.is_loading_state = False
         self.thread_pool = QThreadPool(); self.current_runner = None
         self.var_panel = VariablePanel(); self.task_panel = TaskPanel(); self.run_panel = RunPanel()
@@ -57,10 +63,33 @@ class MainWindow(QMainWindow):
         self.variable_proxy_model.setSourceModel(self.all_vars_model)
         self.variable_proxy_model.set_exclude_built_in(True)
         self.highlighter_editors = []
-        self.setup_ui(); self.connect_signals(); self.load_state()
+        self.setup_ui(); self.connect_signals()
+        
+        self.load_env_settings()
+        self.load_state()
+        
         self.log(f"PySide6 워크플로우 자동화 도구 시작. 현재 {self.thread_pool.maxThreadCount()}개의 스레드 사용 가능.")
         self.update_completer_model_and_filter(); self.task_handler.on_task_selected(None, None)
 
+    # *** 수정됨: 함수 이름 변경 및 로직 추가 ***
+    def load_env_settings(self):
+        """환경 변수에서 API 키, 프로젝트 ID, 위치를 찾아 설정합니다."""
+        api_key = os.getenv("GEMINI_API_KEY")
+        project_id = os.getenv("PROJECT_ID")
+        location = os.getenv("LOCATION")
+
+        if api_key:
+            self.run_panel.api_key_edit.setText(api_key)
+            self.log(f".env: API 키를 불러왔습니다. ({api_key[:3]}..)")
+        else:
+            self.log(".env: GEMINI_API_KEY가 설정되지 않았습니다.")
+        
+        if project_id and location:
+            self.log(f".env: Project ID({project_id})와 Location({location})을 불러왔습니다.")
+        else:
+            self.log(".env: Context Caching에 필요한 PROJECT_ID 또는 LOCATION이 설정되지 않았습니다.")
+
+    # ... 이하 모든 함수는 이전 버전과 동일 ...
     def setup_ui(self):
         splitter = QSplitter(Qt.Horizontal); splitter.addWidget(self.var_panel); splitter.addWidget(self.task_panel); splitter.addWidget(self.run_panel)
         splitter.setSizes([350, 600, 450]); central_widget = QWidget(); layout = QHBoxLayout(central_widget)
@@ -76,34 +105,6 @@ class MainWindow(QMainWindow):
             self.run_panel.model_name_edit.setText("gemini-1.5-flash-latest")
             self.run_panel.output_folder_edit.setText(os.path.join(os.getcwd(), "output_pyside"))
             self.run_panel.output_ext_edit.setText(".md")
-
-    @Slot()
-    def update_completer_model_and_filter(self):
-        self.all_vars_model.clear()
-        
-        # *** 수정됨: 유효 변수 목록 생성 로직 수정 ***
-        # 1. 유효 변수 이름 세트를 정확하게 생성
-        valid_var_names = BUILT_IN_VARS.copy()
-        for var in self.variables.values():
-            valid_var_names.add(var.name)
-
-        # 2. 모델 채우기
-        for var_name in sorted(list(BUILT_IN_VARS)):
-            item = QStandardItem(var_name); item.setData(QColor("#4a90e2"), Qt.ForegroundRole)
-            item.setToolTip(f"내장 변수: {var_name}"); item.setData('built-in', VAR_TYPE_ROLE)
-            self.all_vars_model.appendRow(item)
-        for var in sorted(self.variables.values(), key=lambda v: v.name):
-            item = QStandardItem(var.name); item.setData('user', VAR_TYPE_ROLE)
-            self.all_vars_model.appendRow(item)
-
-        # 3. 프록시 필터 업데이트
-        self.update_variable_completer_filter()
-        
-        # 4. 모든 하이라이터에 유효 변수 목록 업데이트
-        for editor in self.highlighter_editors:
-            editor.highlighter.set_valid_variables(valid_var_names)
-
-    # ... 이하 모든 함수는 이전 버전과 동일 ...
     def connect_signals(self):
         self.variable_handler.connect_signals(); self.task_handler.connect_signals()
         self.variable_handler.signals.state_changed.connect(self.schedule_save)
@@ -133,9 +134,12 @@ class MainWindow(QMainWindow):
             state_data = {
                 'variables': [self.variables[var_id].to_dict() for var_id in var_order_ids if var_id in self.variables],
                 'tasks': [self.tasks[task_id].to_dict() for task_id in task_order_ids if task_id in self.tasks],
-                'settings': { 'api_key': self.run_panel.api_key_edit.text(), 'model_name': self.run_panel.model_name_edit.text(), 
-                              'output_folder': self.run_panel.output_folder_edit.text(), 'output_extension': self.run_panel.output_ext_edit.text(), 
-                              'log_folder': self.run_panel.log_folder_edit.text() }}
+                'settings': { 
+                    'model_name': self.run_panel.model_name_edit.text(), 
+                    'output_folder': self.run_panel.output_folder_edit.text(), 
+                    'output_extension': self.run_panel.output_ext_edit.text(), 
+                    'log_folder': self.run_panel.log_folder_edit.text() 
+                }}
             with open(self.config_file, 'w', encoding='utf-8') as f: json.dump(state_data, f, indent=4, ensure_ascii=False)
         except Exception as e: self.log(f"작업 환경 저장 실패: {e}")
     def load_state(self):
@@ -158,7 +162,7 @@ class MainWindow(QMainWindow):
                 self.tasks[task.id] = task; item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
                 item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked); self.task_panel.list_widget.addItem(item)
-            settings = state_data.get('settings', {}); self.run_panel.api_key_edit.setText(settings.get('api_key', ''))
+            settings = state_data.get('settings', {}); 
             self.run_panel.model_name_edit.setText(settings.get('model_name', 'gemini-1.5-flash-latest'))
             self.run_panel.output_folder_edit.setText(settings.get('output_folder', os.path.join(os.getcwd(), "output_pyside")))
             self.run_panel.output_ext_edit.setText(settings.get('output_extension', '.md'))
@@ -166,13 +170,28 @@ class MainWindow(QMainWindow):
             self.log(f"저장된 작업 환경 '{self.config_file}'을 불러왔습니다."); self.load_last_log_file(settings.get('log_folder', ''))
         except Exception as e: QMessageBox.critical(self, "상태 로드 오류", f"'{self.config_file}' 파일을 불러오는 중 오류가 발생했습니다:\n{e}")
         finally: self.is_loading_state = False; self.variable_handler.is_loading = False; self.task_handler.is_loading = False
+    @Slot()
+    def update_completer_model_and_filter(self):
+        self.all_vars_model.clear()
+        valid_var_names = BUILT_IN_VARS.copy()
+        for var in self.variables.values():
+            valid_var_names.add(var.name)
+        for var_name in sorted(list(BUILT_IN_VARS)):
+            item = QStandardItem(var_name); item.setData(QColor("#4a90e2"), Qt.ForegroundRole)
+            item.setToolTip(f"내장 변수: {var_name}"); item.setData('built-in', VAR_TYPE_ROLE)
+            self.all_vars_model.appendRow(item)
+        for var in sorted(self.variables.values(), key=lambda v: v.name):
+            item = QStandardItem(var.name); item.setData('user', VAR_TYPE_ROLE)
+            self.all_vars_model.appendRow(item)
+        self.update_variable_completer_filter()
+        for editor in self.highlighter_editors:
+            editor.highlighter.set_valid_variables(valid_var_names)
     def update_variable_completer_filter(self):
         current_item = self.var_panel.list_widget.currentItem()
         if current_item:
             current_var_name = current_item.text()
             self.variable_proxy_model.set_exclude_name(current_var_name)
-        else:
-            self.variable_proxy_model.set_exclude_name("")
+        else: self.variable_proxy_model.set_exclude_name("")
     def closeEvent(self, event):
         reply = QMessageBox.question(self, '종료', "종료하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
         if reply == QMessageBox.StandardButton.Yes: self.save_state(); event.accept()
