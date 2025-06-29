@@ -6,21 +6,53 @@ import sys
 import subprocess
 import re
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QSplitter, 
-                             QMessageBox, QFileDialog, QListWidgetItem, QCompleter)
-from PySide6.QtCore import Qt, QThreadPool, Slot, QStringListModel, QTimer, QSortFilterProxyModel, QRegularExpression
+                             QMessageBox, QFileDialog, QListWidgetItem)
+from PySide6.QtCore import Qt, QThreadPool, Slot, QTimer, QSortFilterProxyModel
+from PySide6.QtGui import QStandardItemModel, QStandardItem, QColor
 
 from data_models import Variable, Task
-from ui_components import VariablePanel, TaskPanel, RunPanel
+from ui_components import VariablePanel, TaskPanel, RunPanel, CompleterTextEdit
 from core_logic import TaskRunner
 from variable_handler import VariableHandler
 from task_handler import TaskHandler
 
 BUILT_IN_VARS = {'RESPONSE'}
+VAR_TYPE_ROLE = Qt.UserRole + 1
+
+class VariableFilterProxyModel(QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._exclude_name = ""
+        self._exclude_built_in = False
+
+    def set_exclude_name(self, name):
+        self._exclude_name = name
+        self.invalidateFilter()
+
+    def set_exclude_built_in(self, exclude):
+        self._exclude_built_in = exclude
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        index = self.sourceModel().index(source_row, 0, source_parent)
+        
+        if self._exclude_name:
+            text = self.sourceModel().data(index, Qt.DisplayRole)
+            if text == self._exclude_name:
+                return False
+        
+        if self._exclude_built_in:
+            var_type = self.sourceModel().data(index, VAR_TYPE_ROLE)
+            if var_type == 'built-in':
+                return False
+                
+        # 상위 클래스의 필터링도 존중 (예: setFilterRegularExpression)
+        return super().filterAcceptsRow(source_row, source_parent)
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v4.1 (템플릿 자동완성)")
+        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v5.3 (컨텍스트 자동완성)")
         self.setGeometry(100, 100, 1400, 900)
         
         self.config_file = "workspace.json"; self.variables = {}; self.tasks = {}; self.is_loading_state = False
@@ -31,9 +63,17 @@ class MainWindow(QMainWindow):
         self.variable_handler = VariableHandler(self.var_panel, self.variables, BUILT_IN_VARS)
         self.task_handler = TaskHandler(self.task_panel, self.tasks)
         
-        self.save_timer = QTimer(self); self.all_vars_model = QStringListModel(self)
-        self.vars_proxy_model = QSortFilterProxyModel(self); self.task_completer = QCompleter(self.all_vars_model, self)
-        self.variable_completer = QCompleter(self.vars_proxy_model, self)
+        self.save_timer = QTimer(self)
+        
+        self.all_vars_model = QStandardItemModel(self)
+        
+        self.prompt_proxy_model = VariableFilterProxyModel(self)
+        self.prompt_proxy_model.setSourceModel(self.all_vars_model)
+        self.prompt_proxy_model.set_exclude_built_in(True)
+
+        self.variable_proxy_model = VariableFilterProxyModel(self)
+        self.variable_proxy_model.setSourceModel(self.all_vars_model)
+        self.variable_proxy_model.set_exclude_built_in(True)
 
         self.setup_ui(); self.connect_signals(); self.load_state()
         self.log(f"PySide6 워크플로우 자동화 도구 시작. 현재 {self.thread_pool.maxThreadCount()}개의 스레드 사용 가능.")
@@ -43,22 +83,22 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal); splitter.addWidget(self.var_panel); splitter.addWidget(self.task_panel); splitter.addWidget(self.run_panel)
         splitter.setSizes([350, 600, 450]); central_widget = QWidget(); layout = QHBoxLayout(central_widget)
         layout.addWidget(splitter); self.setCentralWidget(central_widget)
-        self.vars_proxy_model.setSourceModel(self.all_vars_model)
-        for completer in [self.task_completer, self.variable_completer]:
-            completer.setCaseSensitivity(Qt.CaseInsensitive); completer.setFilterMode(Qt.MatchContains)
         
-        self.var_panel.value_edit.setCompleter(self.variable_completer)
-        self.task_panel.prompt_edit.setCompleter(self.task_completer)
+        self.var_panel.value_edit.setModel(self.variable_proxy_model)
+        self.task_panel.prompt_edit.setModel(self.prompt_proxy_model)
+        self.task_panel.output_template_edit.setModel(self.all_vars_model)
         
-        # *** 수정됨: output_template_edit에도 자동완성기 연결 ***
-        self.task_panel.output_template_edit.setCompleter(self.task_completer)
-        
+        # QCompleter의 기본 속성 설정
+        for editor in [self.var_panel.value_edit, self.task_panel.prompt_edit, self.task_panel.output_template_edit]:
+            editor.completer().setCaseSensitivity(Qt.CaseInsensitive)
+            editor.completer().setFilterMode(Qt.MatchContains)
+
         if not os.path.exists(self.config_file):
             self.run_panel.model_name_edit.setText("gemini-1.5-flash-latest")
             self.run_panel.output_folder_edit.setText(os.path.join(os.getcwd(), "output_pyside"))
             self.run_panel.output_ext_edit.setText(".md")
 
-    # ... 이하 모든 함수는 이전 버전과 동일 ...
+    # ... 이하 코드는 이전 버전과 동일 ...
     def connect_signals(self):
         self.variable_handler.connect_signals(); self.task_handler.connect_signals()
         self.variable_handler.signals.state_changed.connect(self.schedule_save)
@@ -121,20 +161,28 @@ class MainWindow(QMainWindow):
             self.log(f"저장된 작업 환경 '{self.config_file}'을 불러왔습니다."); self.load_last_log_file(settings.get('log_folder', ''))
         except Exception as e: QMessageBox.critical(self, "상태 로드 오류", f"'{self.config_file}' 파일을 불러오는 중 오류가 발생했습니다:\n{e}")
         finally: self.is_loading_state = False; self.variable_handler.is_loading = False; self.task_handler.is_loading = False
-    def closeEvent(self, event):
-        reply = QMessageBox.question(self, '종료', "종료하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
-        if reply == QMessageBox.StandardButton.Yes: self.save_state(); event.accept()
-        else: event.ignore()
     @Slot()
     def update_completer_model_and_filter(self):
-        var_names = [var.name for var in self.variables.values()]; self.all_vars_model.setStringList(var_names)
+        self.all_vars_model.clear()
+        for var_name in sorted(list(BUILT_IN_VARS)):
+            item = QStandardItem(var_name); item.setData(QColor("#4a90e2"), Qt.ForegroundRole)
+            item.setToolTip(f"내장 변수: {var_name}"); item.setData('built-in', VAR_TYPE_ROLE)
+            self.all_vars_model.appendRow(item)
+        for var in sorted(self.variables.values(), key=lambda v: v.name):
+            item = QStandardItem(var.name); item.setData('user', VAR_TYPE_ROLE)
+            self.all_vars_model.appendRow(item)
         self.update_variable_completer_filter()
     def update_variable_completer_filter(self):
         current_item = self.var_panel.list_widget.currentItem()
         if current_item:
-            current_var_name = current_item.text(); pattern = f"^(?!{re.escape(current_var_name)}$).*"
-            self.vars_proxy_model.setFilterRegularExpression(QRegularExpression(pattern))
-        else: self.vars_proxy_model.setFilterRegularExpression(QRegularExpression("$^"))
+            current_var_name = current_item.text()
+            self.variable_proxy_model.set_exclude_name(current_var_name)
+        else:
+            self.variable_proxy_model.set_exclude_name("")
+    def closeEvent(self, event):
+        reply = QMessageBox.question(self, '종료', "종료하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
+        if reply == QMessageBox.StandardButton.Yes: self.save_state(); event.accept()
+        else: event.ignore()
     @Slot(str)
     def log(self, message): self.run_panel.log_viewer.append(message)
     @Slot()

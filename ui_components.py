@@ -3,10 +3,9 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QCompleter,
                              QPushButton, QLineEdit, QTextEdit, QGroupBox, QLabel,
                              QAbstractItemView)
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QTextCursor, QPalette
+from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QTextCursor, QPalette, QIcon
 
-# ... EditableListWidget, CompleterTextEdit, VariablePanel 클래스는 변경 없음 ...
 class EditableListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -17,30 +16,62 @@ class EditableListWidget(QListWidget):
             item = self.currentItem()
             if item: self.editItem(item)
         else: super().keyPressEvent(event)
+
 class CompleterTextEdit(QTextEdit):
-    def __init__(self, parent=None): super().__init__(parent); self._completer = None
-    def setCompleter(self, completer):
-        if self._completer: self._completer.activated.disconnect(self.insertCompletion)
-        self._completer = completer
-        if not self._completer: return
-        self._completer.setWidget(self); self._completer.setCompletionMode(QCompleter.PopupCompletion); self._completer.activated.connect(self.insertCompletion)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._completer = QCompleter(self)
+        self._completer.setWidget(self)
+        self._completer.setCompletionMode(QCompleter.PopupCompletion)
+        # visibleChanged 시그널 연결 제거
+
+    def setModel(self, model):
+        if self._completer.model():
+            try: self._completer.activated.disconnect(self.insertCompletion)
+            except RuntimeError: pass
+        self._completer.setModel(model)
+        if model:
+            self._completer.activated.connect(self.insertCompletion)
+
     def completer(self): return self._completer
+
+    @Slot(str)
     def insertCompletion(self, completion):
         tc = self.textCursor(); prefix = self.completer().completionPrefix()
-        tc.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, len(prefix) + 1); tc.insertText("{" + completion + "}"); self.setTextCursor(tc)
+        tc.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, len(prefix) + 1)
+        tc.insertText("{" + completion + "}"); self.setTextCursor(tc)
+
     def textUnderCursor(self):
-        tc = self.textCursor(); block_text = tc.block().text(); pos_in_block = tc.positionInBlock(); text_before_cursor = block_text[:pos_in_block]; last_brace_pos = text_before_cursor.rfind('{')
+        tc = self.textCursor(); block_text = tc.block().text(); pos_in_block = tc.positionInBlock()
+        text_before_cursor = block_text[:pos_in_block]; last_brace_pos = text_before_cursor.rfind('{')
         if last_brace_pos != -1:
-            if '}' not in text_before_cursor[last_brace_pos:]: return text_before_cursor[last_brace_pos + 1:]
+            suffix = text_before_cursor[last_brace_pos:]
+            if '}' not in suffix and ' ' not in suffix and '\n' not in suffix:
+                return text_before_cursor[last_brace_pos + 1:]
         return ""
+
     def keyPressEvent(self, e):
         if self._completer and self._completer.popup().isVisible():
-            if e.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab): e.ignore(); return
-        super().keyPressEvent(e); prefix = self.textUnderCursor()
-        if not self._completer or prefix == "" and e.text() != '{': self._completer.popup().hide(); return
-        self._completer.setCompletionPrefix(prefix); popup = self.completer().popup()
-        if popup.isHidden(): popup.setCurrentIndex(self._completer.completionModel().index(0, 0))
-        cr = self.cursorRect(); cr.setWidth(popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width()); self._completer.complete(cr)
+            if e.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab):
+                e.ignore(); return
+        
+        super().keyPressEvent(e)
+        prefix = self.textUnderCursor()
+        if not self._completer or (not prefix and e.text() != '{'):
+            self._completer.popup().hide(); return
+            
+        if self._completer.completionPrefix() != prefix:
+            self._completer.setCompletionPrefix(prefix)
+
+        # *** 수정됨: complete() 호출 직후, 팝업의 현재 행을 0으로 설정 ***
+        cr = self.cursorRect()
+        cr.setWidth(300) 
+        self._completer.complete(cr)
+        # 팝업이 나타나도록 요청한 후, 즉시 첫 번째 항목을 선택하도록 설정
+        self._completer.popup().setCurrentIndex(self._completer.completionModel().index(0, 0))
+
+
+# ... 나머지 클래스는 변경 없음 ...
 class VariablePanel(QGroupBox):
     def __init__(self, title="1. 변수 관리"):
         super().__init__(title)
@@ -48,48 +79,33 @@ class VariablePanel(QGroupBox):
         btn_layout = QHBoxLayout(); self.add_btn = QPushButton("+"); self.remove_btn = QPushButton("-")
         btn_layout.addWidget(self.add_btn); btn_layout.addWidget(self.remove_btn); layout.addLayout(btn_layout)
         layout.addWidget(QLabel("변수 이름:")); self.name_edit = QLineEdit(); layout.addWidget(self.name_edit)
-        reserved_label = QLabel("(예약어: RESPONSE 사용 불가)"); palette = reserved_label.palette()
+        reserved_label = QLabel("(예약어: RESPONSE)"); palette = reserved_label.palette()
         palette.setColor(QPalette.WindowText, Qt.gray); reserved_label.setPalette(palette); layout.addWidget(reserved_label)
-        layout.addWidget(QLabel("변수 내용 (자동완성: '{' 입력):")); self.value_edit = CompleterTextEdit()
-        layout.addWidget(self.value_edit); self.load_file_btn = QPushButton("파일 내용 불러오기..."); layout.addWidget(self.load_file_btn)
-
+        layout.addWidget(QLabel("변수 내용 (자동완성: '{' 입력):")); self.value_edit = CompleterTextEdit(); layout.addWidget(self.value_edit)
+        self.load_file_btn = QPushButton("파일 내용 불러오기..."); layout.addWidget(self.load_file_btn)
 class TaskPanel(QGroupBox):
     def __init__(self, title="2. 태스크 관리 (실행 순서)"):
         super().__init__(title)
         layout = QVBoxLayout(self)
         all_check_layout = QHBoxLayout()
         self.check_all_btn = QPushButton("모두 활성화"); self.uncheck_all_btn = QPushButton("모두 비활성화")
-        all_check_layout.addWidget(self.check_all_btn); all_check_layout.addWidget(self.uncheck_all_btn)
-        layout.addLayout(all_check_layout)
-        self.list_widget = EditableListWidget()
-        layout.addWidget(self.list_widget)
+        all_check_layout.addWidget(self.check_all_btn); all_check_layout.addWidget(self.uncheck_all_btn); layout.addLayout(all_check_layout)
+        self.list_widget = EditableListWidget(); layout.addWidget(self.list_widget)
         btn_layout = QHBoxLayout()
         self.up_btn = QPushButton("▲"); self.down_btn = QPushButton("▼"); self.add_btn = QPushButton("+")
         self.copy_btn = QPushButton("복사"); self.remove_btn = QPushButton("-")
         btn_layout.addWidget(self.up_btn); btn_layout.addWidget(self.down_btn); btn_layout.addStretch()
         btn_layout.addWidget(self.add_btn); btn_layout.addWidget(self.copy_btn); btn_layout.addWidget(self.remove_btn)
         layout.addLayout(btn_layout)
-        
         layout.addWidget(QLabel("태스크 이름 ({변수명} 사용 가능):"))
-        self.name_edit = QLineEdit()
-        layout.addWidget(self.name_edit)
-        
+        self.name_edit = QLineEdit(); layout.addWidget(self.name_edit)
         layout.addWidget(QLabel("프롬프트 템플릿 (자동완성: '{' 입력):"))
-        self.prompt_edit = CompleterTextEdit()
-        layout.addWidget(self.prompt_edit)
-
+        self.prompt_edit = CompleterTextEdit(); layout.addWidget(self.prompt_edit)
         layout.addWidget(QLabel("저장 내용 템플릿:"))
-        # *** 수정됨: QTextEdit -> CompleterTextEdit ***
-        self.output_template_edit = CompleterTextEdit()
-        layout.addWidget(self.output_template_edit)
-        
-        template_info_label = QLabel("({RESPONSE} 및 사용자 변수 사용 가능, 비워두면 답변 전체 저장)")
-        palette = template_info_label.palette()
-        palette.setColor(QPalette.WindowText, Qt.gray)
-        template_info_label.setPalette(palette)
+        self.output_template_edit = CompleterTextEdit(); layout.addWidget(self.output_template_edit)
+        template_info_label = QLabel("({RESPONSE} 등 내장 변수와 사용자 변수 사용 가능)")
+        palette = template_info_label.palette(); palette.setColor(QPalette.WindowText, Qt.gray); template_info_label.setPalette(palette)
         layout.addWidget(template_info_label)
-
-# ... RunPanel 클래스는 변경 없음 ...
 class RunPanel(QGroupBox):
     def __init__(self, title="3. 실행 및 설정"):
         super().__init__(title)
