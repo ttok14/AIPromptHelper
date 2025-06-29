@@ -16,8 +16,7 @@ from core_logic import TaskRunner
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v2.0 (드래그앤드롭)") # 버전 업데이트
-        # ... 이하 __init__ 동일 ...
+        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v2.3 (자동완성 최종 수정)") # 버전 업데이트
         self.setGeometry(100, 100, 1400, 900)
         self.config_file = "workspace.json"
         self.variables = {}
@@ -53,11 +52,9 @@ class MainWindow(QMainWindow):
         try:
             var_order_ids = [self.var_panel.list_widget.item(i).data(Qt.UserRole) for i in range(self.var_panel.list_widget.count())]
             task_order_ids = [self.task_panel.list_widget.item(i).data(Qt.UserRole) for i in range(self.task_panel.list_widget.count())]
-            
-            # *** 수정됨: 저장 시 정렬된 ID 리스트를 사용 ***
             state_data = {
-                'variables': [self.variables[var_id].to_dict() for var_id in var_order_ids],
-                'tasks': [self.tasks[task_id].to_dict() for task_id in task_order_ids],
+                'variables': [self.variables[var_id].to_dict() for var_id in var_order_ids if var_id in self.variables],
+                'tasks': [self.tasks[task_id].to_dict() for task_id in task_order_ids if task_id in self.tasks],
                 'settings': { 'api_key': self.run_panel.api_key_edit.text(), 'model_name': self.run_panel.model_name_edit.text(), 'output_folder': self.run_panel.output_folder_edit.text(), 'output_extension': self.run_panel.output_ext_edit.text(), 'log_folder': self.run_panel.log_folder_edit.text() }
             }
             with open(self.config_file, 'w', encoding='utf-8') as f: json.dump(state_data, f, indent=4, ensure_ascii=False)
@@ -68,14 +65,20 @@ class MainWindow(QMainWindow):
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f: state_data = json.load(f)
             self.var_panel.list_widget.blockSignals(True); self.task_panel.list_widget.blockSignals(True)
+            self.var_panel.list_widget.clear(); self.variables = {}
+            self.task_panel.list_widget.clear(); self.tasks = {}
             for var_data in state_data.get('variables', []):
-                var = Variable(id=var_data['id'], name=var_data['name'], value=var_data['value'])
-                self.variables[var.id] = var; item = QListWidgetItem(var.name); item.setData(Qt.UserRole, var.id)
+                var = Variable(id=var_data.get('id'), name=var_data.get('name'), value=var_data.get('value'))
+                if not var.id or not var.name: continue
+                self.variables[var.id] = var
+                item = QListWidgetItem(var.name); item.setData(Qt.UserRole, var.id)
                 item.setFlags(item.flags() | Qt.ItemIsEditable); self.var_panel.list_widget.addItem(item)
             for task_data in state_data.get('tasks', []):
                 task_enabled = task_data.get('enabled', True)
-                task = Task(id=task_data['id'], name=task_data['name'], prompt=task_data['prompt'], enabled=task_enabled)
-                self.tasks[task.id] = task; item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
+                task = Task(id=task_data.get('id'), name=task_data.get('name'), prompt=task_data.get('prompt'), enabled=task_enabled)
+                if not task.id or not task.name: continue
+                self.tasks[task.id] = task
+                item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
                 item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked); self.task_panel.list_widget.addItem(item)
             self.var_panel.list_widget.blockSignals(False); self.task_panel.list_widget.blockSignals(False)
@@ -112,63 +115,32 @@ class MainWindow(QMainWindow):
             self.run_panel.model_name_edit.setText("gemini-1.5-flash-latest")
             self.run_panel.output_folder_edit.setText(os.path.join(os.getcwd(), "output_pyside"))
             self.run_panel.output_ext_edit.setText(".md")
-
     def connect_signals(self):
-        # 변수 패널
-        self.var_panel.add_btn.clicked.connect(self.add_variable)
-        self.var_panel.remove_btn.clicked.connect(self.remove_variable)
-        self.var_panel.list_widget.currentItemChanged.connect(self.on_var_selected)
-        self.var_panel.list_widget.itemChanged.connect(self.on_variable_item_changed)
-        self.var_panel.name_edit.editingFinished.connect(self.update_variable_details)
-        self.var_panel.value_edit.textChanged.connect(self.update_variable_details)
+        self.var_panel.add_btn.clicked.connect(self.add_variable); self.var_panel.remove_btn.clicked.connect(self.remove_variable)
+        self.var_panel.list_widget.currentItemChanged.connect(self.on_var_selected); self.var_panel.list_widget.itemChanged.connect(self.on_variable_item_changed)
+        self.var_panel.name_edit.editingFinished.connect(self.update_variable_details); self.var_panel.value_edit.textChanged.connect(self.update_variable_value)
         self.var_panel.load_file_btn.clicked.connect(self.load_variable_from_file)
-        
-        # 태스크 패널
-        self.task_panel.add_btn.clicked.connect(self.add_task)
-        self.task_panel.remove_btn.clicked.connect(self.remove_task)
-        self.task_panel.copy_btn.clicked.connect(self.copy_task)
-        self.task_panel.up_btn.clicked.connect(lambda: self.move_task('up'))
+        self.task_panel.add_btn.clicked.connect(self.add_task); self.task_panel.remove_btn.clicked.connect(self.remove_task)
+        self.task_panel.copy_btn.clicked.connect(self.copy_task); self.task_panel.up_btn.clicked.connect(lambda: self.move_task('up'))
         self.task_panel.down_btn.clicked.connect(lambda: self.move_task('down'))
-        self.task_panel.list_widget.currentItemChanged.connect(self.on_task_selected)
-        self.task_panel.list_widget.itemChanged.connect(self.on_task_item_changed)
-        self.task_panel.name_edit.editingFinished.connect(self.update_task_details)
-        self.task_panel.prompt_edit.textChanged.connect(self.update_task_details)
-        self.task_panel.check_all_btn.clicked.connect(lambda: self.set_all_tasks_checked(True))
-        self.task_panel.uncheck_all_btn.clicked.connect(lambda: self.set_all_tasks_checked(False))
-
-        # *** 추가됨: 드래그 앤 드롭 완료 시그널 연결 ***
-        self.var_panel.list_widget.model().rowsMoved.connect(
-            lambda: self.on_list_order_changed("변수"))
-        self.task_panel.list_widget.model().rowsMoved.connect(
-            lambda: self.on_list_order_changed("태스크"))
-
-        # 실행 패널
-        self.run_panel.run_btn.clicked.connect(self.start_execution)
-        self.run_panel.stop_btn.clicked.connect(self.stop_execution)
+        self.task_panel.list_widget.currentItemChanged.connect(self.on_task_selected); self.task_panel.list_widget.itemChanged.connect(self.on_task_item_changed)
+        self.task_panel.name_edit.editingFinished.connect(self.update_task_details); self.task_panel.prompt_edit.textChanged.connect(self.update_task_details)
+        self.task_panel.check_all_btn.clicked.connect(lambda: self.set_all_tasks_checked(True)); self.task_panel.uncheck_all_btn.clicked.connect(lambda: self.set_all_tasks_checked(False))
+        self.var_panel.list_widget.model().rowsMoved.connect(lambda: self.on_list_order_changed("변수"))
+        self.task_panel.list_widget.model().rowsMoved.connect(lambda: self.on_list_order_changed("태스크"))
+        self.run_panel.run_btn.clicked.connect(self.start_execution); self.run_panel.stop_btn.clicked.connect(self.stop_execution)
         self.run_panel.clear_log_btn.clicked.connect(self.clear_log)
-        self.run_panel.model_name_edit.editingFinished.connect(self.schedule_save)
-        self.run_panel.api_key_edit.editingFinished.connect(self.schedule_save)
-        self.run_panel.output_folder_edit.editingFinished.connect(self.schedule_save)
-        self.run_panel.output_ext_edit.editingFinished.connect(self.schedule_save)
-        self.run_panel.log_folder_edit.editingFinished.connect(self.schedule_save)
-        self.run_panel.select_folder_btn.clicked.connect(self.select_output_folder)
-        self.run_panel.select_log_folder_btn.clicked.connect(self.select_log_folder)
-        self.run_panel.open_output_folder_btn.clicked.connect(self.open_output_folder)
+        self.run_panel.model_name_edit.editingFinished.connect(self.schedule_save); self.run_panel.api_key_edit.editingFinished.connect(self.schedule_save)
+        self.run_panel.output_folder_edit.editingFinished.connect(self.schedule_save); self.run_panel.output_ext_edit.editingFinished.connect(self.schedule_save)
+        self.run_panel.log_folder_edit.editingFinished.connect(self.schedule_save); self.run_panel.select_folder_btn.clicked.connect(self.select_output_folder)
+        self.run_panel.select_log_folder_btn.clicked.connect(self.select_log_folder); self.run_panel.open_output_folder_btn.clicked.connect(self.open_output_folder)
         self.run_panel.open_log_folder_btn.clicked.connect(self.open_log_folder)
-
-    # *** 추가됨: 순서 변경을 처리하는 공통 슬롯 ***
     @Slot(str)
     def on_list_order_changed(self, list_name):
-        """리스트의 순서가 변경되었을 때(드래그앤드롭, 버튼) 호출됩니다."""
         if self.is_loading_state: return
-        self.log(f"{list_name} 목록 순서가 변경되었습니다.")
-        self.schedule_save()
-
+        self.log(f"{list_name} 목록 순서가 변경되었습니다."); self.schedule_save()
     def clear_log(self):
-        self.run_panel.log_viewer.clear()
-        self.log("로그가 삭제되었습니다.")
-    
-    # ... (중간 함수들은 변경 없음) ...
+        self.run_panel.log_viewer.clear(); self.log("로그가 삭제되었습니다.")
     def _open_folder_at_path(self, path):
         if not path or not os.path.isdir(path): QMessageBox.warning(self, "경고", f"유효하지 않은 폴더 경로입니다:\n{path}"); return
         try:
@@ -188,26 +160,39 @@ class MainWindow(QMainWindow):
         self.run_panel.open_log_folder_btn.setEnabled(enabled); self.run_panel.clear_log_btn.setEnabled(enabled)
         if enabled: self.run_panel.run_btn.show(); self.run_panel.stop_btn.hide()
         else: self.run_panel.run_btn.hide(); self.run_panel.stop_btn.show()
-    def update_completer_model(self): self.all_vars_model.setStringList([var.name for var in self.variables.values()])
-    def on_var_selected(self, current, previous):
-        is_item_selected = current is not None
-        self.var_panel.name_edit.setEnabled(is_item_selected); self.var_panel.value_edit.setEnabled(is_item_selected)
-        self.var_panel.remove_btn.setEnabled(is_item_selected); self.var_panel.load_file_btn.setEnabled(is_item_selected)
-        if current:
-            current_var_name = current.text(); pattern = f"^(?!{re.escape(current_var_name)}$).*"
+
+    def update_completer_model(self):
+        self.all_vars_model.setStringList([var.name for var in self.variables.values()])
+        # *** 추가됨: 헬퍼 함수 호출로 필터 즉시 갱신 ***
+        self.update_variable_completer_filter()
+
+    # *** 추가됨: 자동완성 필터 갱신을 위한 헬퍼 함수 ***
+    def update_variable_completer_filter(self):
+        """현재 선택된 변수를 자동완성에서 제외하도록 필터를 업데이트합니다."""
+        current_item = self.var_panel.list_widget.currentItem()
+        if current_item:
+            current_var_name = current_item.text()
+            pattern = f"^(?!{re.escape(current_var_name)}$).*"
             self.vars_proxy_model.setFilterRegularExpression(QRegularExpression(pattern))
-        else: self.vars_proxy_model.setFilterRegularExpression(QRegularExpression("$^"))
-        if not current: self.var_panel.name_edit.clear(); self.var_panel.value_edit.clear(); return
-        var_id = current.data(Qt.UserRole)
-        if var_id in self.variables:
-            var = self.variables[var_id]
-            self.var_panel.name_edit.blockSignals(True); self.var_panel.value_edit.blockSignals(True)
-            self.var_panel.name_edit.setText(var.name); self.var_panel.value_edit.setPlainText(var.value)
-            self.var_panel.name_edit.blockSignals(False); self.var_panel.value_edit.blockSignals(False)
+        else:
+            self.vars_proxy_model.setFilterRegularExpression(QRegularExpression("$^"))
+
+    def _generate_unique_name(self, base_name, existing_names):
+        if base_name not in existing_names: return base_name
+        counter = 2
+        while True:
+            new_name = f"{base_name} ({counter})"
+            if new_name not in existing_names: return new_name
+            counter += 1
     @Slot(str)
     def log(self, message): self.run_panel.log_viewer.append(message)
+
     def add_variable(self):
-        var = Variable(); self.variables[var.id] = var; item = QListWidgetItem(var.name); item.setData(Qt.UserRole, var.id)
+        all_var_names = {v.name for v in self.variables.values()}
+        unique_name = self._generate_unique_name("새 변수", all_var_names)
+        var = Variable(name=unique_name)
+        self.variables[var.id] = var
+        item = QListWidgetItem(var.name); item.setData(Qt.UserRole, var.id)
         item.setFlags(item.flags() | Qt.ItemIsEditable)
         self.var_panel.list_widget.addItem(item); self.var_panel.list_widget.setCurrentItem(item)
         self.update_completer_model(); self.log(f"변수 '{var.name}' 추가됨"); self.schedule_save()
@@ -215,32 +200,90 @@ class MainWindow(QMainWindow):
         item = self.var_panel.list_widget.currentItem();
         if not item: return
         var_id = item.data(Qt.UserRole)
-        if QMessageBox.question(self, "확인", f"'{item.text()}' 변수를 정말 삭제하시겠습니까?") == QMessageBox.Yes:
+        if var_id in self.variables and QMessageBox.question(self, "확인", f"'{self.variables[var_id].name}' 변수를 정말 삭제하시겠습니까?") == QMessageBox.Yes:
             del self.variables[var_id]; self.var_panel.list_widget.takeItem(self.var_panel.list_widget.row(item))
             self.update_completer_model(); self.log(f"변수 '{item.text()}' 삭제됨"); self.schedule_save()
+
     def update_variable_details(self):
-        item = self.var_panel.list_widget.currentItem();
-        if not item: return
+        item = self.var_panel.list_widget.currentItem()
+        if not item or self.is_loading_state: return
         var_id = item.data(Qt.UserRole)
         if var_id in self.variables:
-            var = self.variables[var_id]; var.value = self.var_panel.value_edit.toPlainText(); new_name = self.var_panel.name_edit.text()
-            if var.name != new_name: var.name = new_name; item.setText(new_name)
-            else: self.schedule_save()
+            var = self.variables[var_id]
+            new_name = self.var_panel.name_edit.text()
+            if var.name != new_name:
+                other_var_names = {v.name for k, v in self.variables.items() if k != var_id}
+                if new_name in other_var_names:
+                    QMessageBox.warning(self, "이름 중복", f"'{new_name}'은(는) 이미 사용 중인 변수 이름입니다.")
+                    self.var_panel.name_edit.setText(var.name)
+                    return
+                old_name = var.name
+                var.name = new_name
+                item.setText(new_name)
+                self.log(f"변수 이름 변경: '{old_name}' -> '{new_name}'")
+                # *** 수정됨: 전체 모델과 필터 모두 갱신 ***
+                self.update_completer_model() 
+                self.schedule_save()
+    
+    def update_variable_value(self):
+        """변수의 값만 업데이트하고 저장을 예약합니다."""
+        item = self.var_panel.list_widget.currentItem()
+        if not item or self.is_loading_state: return
+        var_id = item.data(Qt.UserRole)
+        if var_id in self.variables:
+            self.variables[var_id].value = self.var_panel.value_edit.toPlainText()
+            self.schedule_save()
+
     @Slot(QListWidgetItem)
     def on_variable_item_changed(self, item):
         if self.is_loading_state or not item: return
         var_id = item.data(Qt.UserRole)
         if var_id in self.variables:
-            var = self.variables[var_id]; new_name = item.text()
+            var = self.variables[var_id]
+            new_name = item.text()
             if var.name != new_name:
                 old_name = var.name
-                other_var_names = [v.name for k, v in self.variables.items() if k != var_id]
+                other_var_names = {v.name for k, v in self.variables.items() if k != var_id}
                 if new_name in other_var_names:
-                    QMessageBox.warning(self, "이름 중복", f"'{new_name}'은(는) 이미 사용 중인 변수 이름입니다."); item.setText(old_name); return
-                self.log(f"변수 이름 변경: '{old_name}' -> '{new_name}'"); var.name = new_name; self.update_completer_model()
+                    QMessageBox.warning(self, "이름 중복", f"'{new_name}'은(는) 이미 사용 중인 태스크 이름입니다.")
+                    item.setText(old_name)
+                    return
+                self.log(f"변수 이름 변경: '{old_name}' -> '{new_name}'")
+                var.name = new_name
                 if self.var_panel.list_widget.currentItem() == item:
-                    self.var_panel.name_edit.blockSignals(True); self.var_panel.name_edit.setText(new_name); self.var_panel.name_edit.blockSignals(False)
+                    self.var_panel.name_edit.blockSignals(True)
+                    self.var_panel.name_edit.setText(new_name)
+                    self.var_panel.name_edit.blockSignals(False)
+                # *** 수정됨: 전체 모델과 필터 모두 갱신 ***
+                self.update_completer_model()
                 self.schedule_save()
+    
+    def on_var_selected(self, current, previous):
+        if self.is_loading_state: return
+
+        is_item_selected = current is not None
+        self.var_panel.name_edit.setEnabled(is_item_selected)
+        self.var_panel.value_edit.setEnabled(is_item_selected)
+        self.var_panel.remove_btn.setEnabled(is_item_selected)
+        self.var_panel.load_file_btn.setEnabled(is_item_selected)
+        
+        # *** 수정됨: 필터 갱신은 헬퍼 함수에 위임 ***
+        self.update_variable_completer_filter()
+        
+        if current:
+            var_id = current.data(Qt.UserRole)
+            if var_id in self.variables:
+                var = self.variables[var_id]
+                self.var_panel.name_edit.blockSignals(True)
+                self.var_panel.value_edit.blockSignals(True)
+                self.var_panel.name_edit.setText(var.name)
+                self.var_panel.value_edit.setPlainText(var.value)
+                self.var_panel.name_edit.blockSignals(False)
+                self.var_panel.value_edit.blockSignals(False)
+        else:
+            self.var_panel.name_edit.clear()
+            self.var_panel.value_edit.clear()
+
     def load_variable_from_file(self):
         item = self.var_panel.list_widget.currentItem()
         if not item: return
@@ -248,10 +291,15 @@ class MainWindow(QMainWindow):
         if not filepath: return
         try:
             with open(filepath, 'r', encoding='utf-8') as f: content = f.read()
-            self.var_panel.value_edit.insertPlainText(content); self.log(f"'{os.path.basename(filepath)}' 내용을 현재 변수에 추가함"); self.schedule_save()
+            self.var_panel.value_edit.insertPlainText(content)
         except Exception as e: QMessageBox.critical(self, "파일 읽기 오류", str(e))
+        
     def add_task(self):
-        task = Task(); self.tasks[task.id] = task; item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
+        all_task_names = {t.name for t in self.tasks.values()}
+        unique_name = self._generate_unique_name("새 태스크", all_task_names)
+        task = Task(name=unique_name)
+        self.tasks[task.id] = task
+        item = QListWidgetItem(task.name); item.setData(Qt.UserRole, task.id)
         item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
         item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked)
         self.task_panel.list_widget.addItem(item); self.task_panel.list_widget.setCurrentItem(item)
@@ -260,50 +308,77 @@ class MainWindow(QMainWindow):
         item = self.task_panel.list_widget.currentItem()
         if not item: return
         task_id = item.data(Qt.UserRole)
-        if QMessageBox.question(self, "확인", f"'{item.text()}' 태스크를 정말 삭제하시겠습니까?") == QMessageBox.Yes:
+        if task_id in self.tasks and QMessageBox.question(self, "확인", f"'{self.tasks[task_id].name}' 태스크를 정말 삭제하시겠습니까?") == QMessageBox.Yes:
             del self.tasks[task_id]; self.task_panel.list_widget.takeItem(self.task_panel.list_widget.row(item))
             self.log(f"태스크 '{item.text()}' 삭제됨"); self.schedule_save()
     def copy_task(self):
-        item = self.task_panel.list_widget.currentItem();
+        item = self.task_panel.list_widget.currentItem()
         if not item: return
-        original_task = self.tasks[item.data(Qt.UserRole)]; new_task = original_task.copy()
-        self.tasks[new_task.id] = new_task; new_item = QListWidgetItem(new_task.name); new_item.setData(Qt.UserRole, new_task.id)
+        original_task = self.tasks[item.data(Qt.UserRole)]
+        all_task_names = {t.name for t in self.tasks.values()}
+        base_name = f"{original_task.name} (복사본)"
+        unique_name = self._generate_unique_name(base_name, all_task_names)
+        new_task = Task(name=unique_name, prompt=original_task.prompt, enabled=original_task.enabled)
+        self.tasks[new_task.id] = new_task
+        new_item = QListWidgetItem(new_task.name); new_item.setData(Qt.UserRole, new_task.id)
         new_item.setFlags(new_item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
         new_item.setCheckState(Qt.Checked if new_task.enabled else Qt.Unchecked)
         current_row = self.task_panel.list_widget.row(item)
-        self.task_panel.list_widget.insertItem(current_row + 1, new_item); self.task_panel.list_widget.setCurrentItem(new_item)
-        self.log(f"태스크 '{original_task.name}' 복사됨"); self.schedule_save()
-
+        self.task_panel.list_widget.insertItem(current_row + 1, new_item)
+        self.task_panel.list_widget.setCurrentItem(new_item)
+        self.log(f"태스크 '{original_task.name}' 복사됨 -> '{new_task.name}'"); self.schedule_save()
     def move_task(self, direction):
-        # *** 수정됨: schedule_save() 호출 제거 ***
-        list_widget = self.task_panel.list_widget
-        item = list_widget.currentItem()
+        list_widget = self.task_panel.list_widget; item = list_widget.currentItem()
         if not item: return
-
-        current_row = list_widget.row(item)
-        new_row = -1
-
-        if direction == 'up' and current_row > 0:
-            new_row = current_row - 1
-        elif direction == 'down' and current_row < list_widget.count() - 1:
-            new_row = current_row + 1
-        
+        current_row = list_widget.row(item); new_row = -1
+        if direction == 'up' and current_row > 0: new_row = current_row - 1
+        elif direction == 'down' and current_row < list_widget.count() - 1: new_row = current_row + 1
         if new_row != -1:
-            # 아이템을 이동시키면 model().rowsMoved 시그널이 발생하여
-            # on_list_order_changed 슬롯이 호출됩니다.
-            list_widget.takeItem(current_row)
-            list_widget.insertItem(new_row, item)
+            list_widget.takeItem(current_row); list_widget.insertItem(new_row, item)
             list_widget.setCurrentRow(new_row)
-
     def update_task_details(self):
-        item = self.task_panel.list_widget.currentItem();
+        item = self.task_panel.list_widget.currentItem()
         if not item: return
         task_id = item.data(Qt.UserRole)
         if task_id in self.tasks:
-            task = self.tasks[task_id]; new_name = self.task_panel.name_edit.text()
-            if task.name != new_name: task.name = new_name; item.setText(new_name)
+            task = self.tasks[task_id]
+            new_name = self.task_panel.name_edit.text()
+            if task.name != new_name:
+                other_task_names = {t.name for k, t in self.tasks.items() if k != task_id}
+                if new_name in other_task_names:
+                    QMessageBox.warning(self, "이름 중복", f"'{new_name}'은(는) 이미 사용 중인 태스크 이름입니다.")
+                    self.task_panel.name_edit.setText(task.name)
+                    return
+                task.name = new_name
+                item.setText(new_name)
             new_prompt = self.task_panel.prompt_edit.toPlainText()
-            if task.prompt != new_prompt: task.prompt = new_prompt; self.schedule_save()
+            if task.prompt != new_prompt:
+                task.prompt = new_prompt
+            self.schedule_save()
+    @Slot(QListWidgetItem)
+    def on_task_item_changed(self, item):
+        if self.is_loading_state or not item: return
+        task_id = item.data(Qt.UserRole)
+        if task_id in self.tasks:
+            task = self.tasks[task_id]; new_name = item.text()
+            if task.name != new_name:
+                old_name = task.name
+                other_task_names = {t.name for k, t in self.tasks.items() if k != task_id}
+                if new_name in other_task_names:
+                    QMessageBox.warning(self, "이름 중복", f"'{new_name}'은(는) 이미 사용 중인 태스크 이름입니다.")
+                    item.setText(old_name)
+                    return
+                self.log(f"태스크 이름 변경: '{old_name}' -> '{new_name}'")
+                task.name = new_name
+                if self.task_panel.list_widget.currentItem() == item:
+                    self.task_panel.name_edit.blockSignals(True)
+                    self.task_panel.name_edit.setText(new_name)
+                    self.task_panel.name_edit.blockSignals(False)
+                self.schedule_save()
+            new_enabled_state = (item.checkState() == Qt.Checked)
+            if task.enabled != new_enabled_state:
+                task.enabled = new_enabled_state; action_text = "활성화" if new_enabled_state else "비활성화"
+                self.log(f"태스크 '{task.name}' {action_text}됨"); self.schedule_save()
     def set_all_tasks_checked(self, checked):
         state = Qt.Checked if checked else Qt.Unchecked; action_text = "활성화" if checked else "비활성화"
         self.task_panel.list_widget.blockSignals(True)
@@ -313,21 +388,6 @@ class MainWindow(QMainWindow):
             if task_id in self.tasks: self.tasks[task_id].enabled = checked
         self.task_panel.list_widget.blockSignals(False)
         self.log(f"모든 태스크를 {action_text}했습니다."); self.schedule_save()
-    @Slot(QListWidgetItem)
-    def on_task_item_changed(self, item):
-        if self.is_loading_state or not item: return
-        task_id = item.data(Qt.UserRole)
-        if task_id in self.tasks:
-            task = self.tasks[task_id]; new_name = item.text()
-            if task.name != new_name:
-                self.log(f"태스크 이름 변경: '{task.name}' -> '{new_name}'"); task.name = new_name
-                if self.task_panel.list_widget.currentItem() == item:
-                    self.task_panel.name_edit.blockSignals(True); self.task_panel.name_edit.setText(new_name); self.task_panel.name_edit.blockSignals(False)
-                self.schedule_save()
-            new_enabled_state = (item.checkState() == Qt.Checked)
-            if task.enabled != new_enabled_state:
-                task.enabled = new_enabled_state; action_text = "활성화" if new_enabled_state else "비활성화"
-                self.log(f"태스크 '{task.name}' {action_text}됨"); self.schedule_save()
     def on_task_selected(self, current, previous):
         is_item_selected = current is not None
         for btn in [self.task_panel.remove_btn, self.task_panel.copy_btn, self.task_panel.up_btn, self.task_panel.down_btn]: btn.setEnabled(is_item_selected)

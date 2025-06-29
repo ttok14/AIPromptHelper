@@ -3,7 +3,6 @@
 import uuid
 
 class Variable:
-    # (이전과 동일, 변경 없음)
     def __init__(self, name="새 변수", value="", id=None):
         self.id = id if id else str(uuid.uuid4())
         self.name = name
@@ -20,24 +19,19 @@ class Variable:
         return f"Variable(id={self.id}, name='{self.name}')"
 
 class Task:
-    # *** 수정됨: enabled 속성 추가 ***
     def __init__(self, name="새 태스크", prompt="", id=None, enabled=True):
         self.id = id if id else str(uuid.uuid4())
         self.name = name
         self.prompt = prompt
-        self.enabled = enabled  # 활성화 상태 (기본값 True)
-        
+        self.enabled = enabled
+
     def to_dict(self):
         return {
             'id': self.id,
             'name': self.name,
             'prompt': self.prompt,
-            'enabled': self.enabled # 파일에 저장할 데이터에 포함
+            'enabled': self.enabled
         }
         
-    def copy(self):
-        """태스크 복사본 생성 (enabled 상태 포함)"""
-        return Task(name=f"{self.name} (복사본)", prompt=self.prompt, enabled=self.enabled)
-
     def __repr__(self):
         return f"Task(id={self.id}, name='{self.name}', enabled={self.enabled})"
