@@ -27,12 +27,13 @@ load_dotenv()
 
 BUILT_IN_VARS = {'RESPONSE'}
 SUPPORTED_MODELS = [
-    "gemini-1.5-pro",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
     "gemini-1.5-flash"
 ]
 VAR_TYPE_ROLE = Qt.UserRole + 1
 
-# ... VariableFilterProxyModel, CacheFetcher, CacheDetailsFetcher, CacheDeleter 클래스는 변경 없음 ...
 class VariableFilterProxyModel(QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent); self._exclude_name = ""; self._exclude_built_in = False
@@ -45,8 +46,10 @@ class VariableFilterProxyModel(QSortFilterProxyModel):
         if self._exclude_built_in:
             if self.sourceModel().data(index, VAR_TYPE_ROLE) == 'built-in': return False
         return super().filterAcceptsRow(source_row, source_parent)
+
 class CacheFetcherSignals(QObject):
     finished = Signal(dict); error = Signal(str)
+
 class CacheFetcher(QRunnable):
     def __init__(self): super().__init__(); self.signals = CacheFetcherSignals()
     @Slot()
@@ -62,8 +65,10 @@ class CacheFetcher(QRunnable):
                 caches[cache.name] = {'display_name': display_name, 'model_name': model_name}
             self.signals.finished.emit(caches)
         except Exception as e: self.signals.error.emit(f"캐시 목록 로드 실패: {e}")
+
 class CacheDetailsFetcherSignals(QObject):
     finished = Signal(object); error = Signal(str)
+
 class CacheDetailsFetcher(QRunnable):
     def __init__(self, cache_name): super().__init__(); self.signals = CacheDetailsFetcherSignals(); self.cache_name = cache_name
     @Slot()
@@ -75,8 +80,10 @@ class CacheDetailsFetcher(QRunnable):
             cache = caching.CachedContent.get(self.cache_name)
             self.signals.finished.emit(cache)
         except Exception as e: self.signals.error.emit(f"캐시 상세 정보 로드 실패: {e}")
+
 class CacheDeleterSignals(QObject):
     finished = Signal(str); error = Signal(str)
+
 class CacheDeleter(QRunnable):
     def __init__(self, cache_name): super().__init__(); self.signals = CacheDeleterSignals(); self.cache_name = cache_name
     @Slot()
@@ -93,7 +100,6 @@ class CacheUpdaterSignals(QObject):
     finished = Signal(object); error = Signal(str)
 
 class CacheUpdater(QRunnable):
-    # *** 수정됨: 제공해주신 코드로 교체 ***
     def __init__(self, cache_name, new_ttl):
         super().__init__(); self.signals = CacheUpdaterSignals()
         self.cache_name = cache_name; self.new_ttl = new_ttl
@@ -104,33 +110,39 @@ class CacheUpdater(QRunnable):
             if not all([project_id, location]): raise ValueError(".env 설정 필요")
             vertexai.init(project=project_id, location=location)
             cache_to_update = caching.CachedContent.get(self.cache_name)
-            
             if not self.new_ttl:
                 raise ValueError("업데이트할 TTL 값이 없습니다.")
-
             cache_to_update.update(ttl=self.new_ttl)
             updated_cache = caching.CachedContent.get(self.cache_name)
-            
             self.signals.finished.emit(updated_cache)
-        except Exception as e:
-            self.signals.error.emit(f"캐시 업데이트 실패: {e}")
+        except Exception as e: self.signals.error.emit(f"캐시 업데이트 실패: {e}")
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Gemini 워크플로우 자동화 도구 v9.9 (TTL 업데이트 수정)")
+        self.setWindowTitle("Gemini 워크플로우 자동화 도구")
         self.setGeometry(100, 100, 1400, 900)
         
-        self.config_file = "workspace.json"; self.variables = {}; self.tasks = {}; self.is_loading_state = False
-        self.current_project_path = None; self.is_dirty = False
+        self.variables = {}; self.tasks = {}
+        self.is_loading_state = False
+        self.current_project_path = None
+        self.is_dirty = False
+        
         self.thread_pool = QThreadPool(); self.current_runner = None
+        
         self.var_panel = VariablePanel(); self.task_panel = TaskPanel(); self.run_panel = RunPanel()
+        
         self.variable_handler = VariableHandler(self.var_panel, self.variables, BUILT_IN_VARS)
         self.task_handler = TaskHandler(self.task_panel, self.tasks)
-        self.save_timer = QTimer(self); self.all_vars_model = QStandardItemModel(self)
+        
+        self.all_vars_model = QStandardItemModel(self)
         self.prompt_proxy_model = VariableFilterProxyModel(self); self.prompt_proxy_model.setSourceModel(self.all_vars_model); self.prompt_proxy_model.set_exclude_built_in(True)
         self.variable_proxy_model = VariableFilterProxyModel(self); self.variable_proxy_model.setSourceModel(self.all_vars_model); self.variable_proxy_model.set_exclude_built_in(True)
-        self.highlighter_editors = []; self.cache_manager_dialog = None 
+        self.highlighter_editors = []
+        
+        self.cache_manager_dialog = None 
+
         self.setup_ui(); self.setup_menu_bar(); self.connect_signals()
         self.load_env_settings(); self.new_project()
         self.log(f"PySide6 워크플로우 자동화 도구 시작. 현재 {self.thread_pool.maxThreadCount()}개의 스레드 사용 가능.")
@@ -144,11 +156,13 @@ class MainWindow(QMainWindow):
         self.task_panel.output_template_edit.setModel(self.all_vars_model)
         self.highlighter_editors.extend([self.var_panel.value_edit, self.task_panel.prompt_edit, self.task_panel.output_template_edit])
         for editor in self.highlighter_editors:
-            editor.completer().setCaseSensitivity(Qt.CaseInsensitive); editor.completer().setFilterMode(Qt.MatchContains)
+            editor.completer().setCaseSensitivity(Qt.CaseInsensitive)
+            editor.completer().setFilterMode(Qt.MatchContains)
         self.run_panel.model_selector_combo.addItems(SUPPORTED_MODELS)
         
     def setup_menu_bar(self):
-        menu_bar = self.menuBar(); file_menu = menu_bar.addMenu("&File")
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("&File")
         new_action = QAction("&New Project", self); new_action.setShortcut(QKeySequence.StandardKey.New); new_action.triggered.connect(self.new_project_action); file_menu.addAction(new_action)
         open_action = QAction("&Open Project...", self); open_action.setShortcut(QKeySequence.StandardKey.Open); open_action.triggered.connect(self.open_project_action); file_menu.addAction(open_action)
         file_menu.addSeparator()
@@ -157,7 +171,9 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         exit_action = QAction("E&xit", self); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
         tools_menu = menu_bar.addMenu("&Tools")
-        cache_manager_action = QAction("Context Cache 관리...", self); cache_manager_action.triggered.connect(self.open_cache_manager); tools_menu.addAction(cache_manager_action)
+        cache_manager_action = QAction("Context Cache 관리...", self)
+        cache_manager_action.triggered.connect(self.open_cache_manager)
+        tools_menu.addAction(cache_manager_action)
         
     def connect_signals(self):
         self.variable_handler.connect_signals(); self.task_handler.connect_signals()
@@ -179,6 +195,13 @@ class MainWindow(QMainWindow):
         self.run_panel.select_log_folder_btn.clicked.connect(lambda: self.select_folder_for(self.run_panel.log_folder_edit))
         self.run_panel.open_log_folder_btn.clicked.connect(self.open_log_folder)
 
+    def load_env_settings(self):
+        api_key = os.getenv("GEMINI_API_KEY"); project_id = os.getenv("PROJECT_ID"); location = os.getenv("LOCATION")
+        if api_key: self.run_panel.api_key_edit.setText(api_key); self.log(".env: API 키를 불러왔습니다.")
+        else: self.run_panel.api_key_edit.clear(); self.log(".env: GEMINI_API_KEY가 설정되지 않았습니다.")
+        if project_id and location: self.log(f".env: Project ID({project_id})와 Location({location})을 불러왔습니다.")
+        else: self.log(".env: Context Caching에 필요한 PROJECT_ID 또는 LOCATION이 설정되지 않았습니다.")
+
     @Slot()
     def open_cache_manager(self):
         if not self.cache_manager_dialog:
@@ -190,39 +213,58 @@ class MainWindow(QMainWindow):
         self.cache_manager_dialog.show(); self.cache_manager_dialog.raise_(); self.cache_manager_dialog.activateWindow()
         self.refresh_caches_for_manager()
 
+    def _execute_cache_task(self, task_name, worker):
+        self.log(f"관리자: {task_name}...")
+        self.set_ui_enabled(False)
+        if self.cache_manager_dialog:
+            self.cache_manager_dialog.set_controls_enabled(False)
+        worker.signals.error.connect(self.on_cache_action_error)
+        self.thread_pool.start(worker)
+
     @Slot()
     def refresh_caches_for_manager(self):
         project_id = os.getenv("PROJECT_ID"); location = os.getenv("LOCATION")
         if not project_id or not location:
             QMessageBox.warning(self, "환경 변수 오류", ".env 파일에 PROJECT_ID와 LOCATION을 설정해야 합니다."); return
-        self.log("관리자: 캐시 목록을 불러오는 중...")
-        fetcher = CacheFetcher(); fetcher.signals.finished.connect(self.cache_manager_dialog.update_cache_list)
-        fetcher.signals.error.connect(self.cache_manager_dialog.show_error); self.thread_pool.start(fetcher)
+        fetcher = CacheFetcher()
+        fetcher.signals.finished.connect(self.on_manager_caches_fetched)
+        self._execute_cache_task("캐시 목록 로드 중", fetcher)
+
+    @Slot(dict)
+    def on_manager_caches_fetched(self, caches):
+        self.set_ui_enabled(True)
+        if self.cache_manager_dialog:
+            self.log(f"관리자: {len(caches)}개의 캐시를 찾았습니다.")
+            self.cache_manager_dialog.update_cache_list(caches)
 
     @Slot(str)
     def fetch_cache_details(self, cache_name):
         details_fetcher = CacheDetailsFetcher(cache_name)
-        details_fetcher.signals.finished.connect(self.cache_manager_dialog.update_details_view)
-        details_fetcher.signals.error.connect(self.cache_manager_dialog.show_error); self.thread_pool.start(details_fetcher)
+        details_fetcher.signals.finished.connect(self.on_cache_details_fetched)
+        self._execute_cache_task("캐시 상세 정보 로드 중", details_fetcher)
+
+    @Slot(object)
+    def on_cache_details_fetched(self, cache_object):
+        self.set_ui_enabled(True)
+        if self.cache_manager_dialog:
+            self.cache_manager_dialog.update_details_view(cache_object)
 
     @Slot(str)
     def delete_cache(self, cache_name):
-        self.log(f"관리자: '{os.path.basename(cache_name)}' 캐시 삭제 중...")
         deleter = CacheDeleter(cache_name)
         deleter.signals.finished.connect(self.on_cache_deleted)
-        deleter.signals.error.connect(self.on_cache_action_error); self.thread_pool.start(deleter)
+        self._execute_cache_task(f"'{os.path.basename(cache_name)}' 캐시 삭제 중", deleter)
 
     @Slot(str, datetime.timedelta)
     def update_cache_ttl(self, cache_name, new_ttl):
-        self.log(f"관리자: '{os.path.basename(cache_name)}' 캐시 TTL 업데이트 중...")
         updater = CacheUpdater(cache_name, new_ttl)
         updater.signals.finished.connect(self.on_cache_updated)
-        updater.signals.error.connect(self.on_cache_action_error)
-        self.thread_pool.start(updater)
+        self._execute_cache_task(f"'{os.path.basename(cache_name)}' 캐시 TTL 업데이트 중", updater)
         
     @Slot(object)
     def on_cache_updated(self, updated_cache_object):
         self.log(f"관리자: 캐시가 성공적으로 업데이트되었습니다.")
+        self.set_ui_enabled(True)
         if self.cache_manager_dialog and self.cache_manager_dialog.isVisible():
             self.cache_manager_dialog.update_details_view(updated_cache_object)
         self.refresh_caches()
@@ -230,20 +272,16 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def on_cache_deleted(self, deleted_cache_name):
         self.log(f"관리자: '{os.path.basename(deleted_cache_name)}' 캐시가 성공적으로 삭제되었습니다.")
+        self.set_ui_enabled(True)
         self.refresh_caches_for_manager(); self.refresh_caches()
 
     @Slot(str)
     def on_cache_action_error(self, error_msg):
         self.log(error_msg); QMessageBox.critical(self, "캐시 작업 오류", error_msg)
-        self.refresh_caches_for_manager()
-        
-    def load_env_settings(self):
-        api_key = os.getenv("GEMINI_API_KEY"); project_id = os.getenv("PROJECT_ID"); location = os.getenv("LOCATION")
-        if api_key: self.run_panel.api_key_edit.setText(api_key); self.log(".env: API 키를 불러왔습니다.")
-        else: self.run_panel.api_key_edit.clear(); self.log(".env: GEMINI_API_KEY가 설정되지 않았습니다.")
-        if project_id and location: self.log(f".env: Project ID({project_id})와 Location({location})을 불러왔습니다.")
-        else: self.log(".env: Context Caching에 필요한 PROJECT_ID 또는 LOCATION이 설정되지 않았습니다.")
-        
+        self.set_ui_enabled(True)
+        if self.cache_manager_dialog:
+            self.cache_manager_dialog.show_error(error_msg)
+
     @Slot()
     def refresh_caches(self):
         project_id = os.getenv("PROJECT_ID"); location = os.getenv("LOCATION")
@@ -252,7 +290,7 @@ class MainWindow(QMainWindow):
             return
         self.log("캐시 목록을 불러오는 중..."); self.run_panel.refresh_cache_btn.setEnabled(False)
         fetcher = CacheFetcher(); fetcher.signals.finished.connect(self.on_caches_fetched)
-        fetcher.signals.error.connect(self.on_cache_fetch_error); self.thread_pool.start(fetcher)
+        fetcher.signals.error.connect(self.on_main_cache_fetch_error); self.thread_pool.start(fetcher)
         
     @Slot(dict)
     def on_caches_fetched(self, caches):
@@ -270,7 +308,7 @@ class MainWindow(QMainWindow):
         combo.blockSignals(False); self.on_cache_selected(combo.currentIndex())
         
     @Slot(str)
-    def on_cache_fetch_error(self, error_msg):
+    def on_main_cache_fetch_error(self, error_msg):
         self.log(error_msg); 
         if self.isVisible(): QMessageBox.critical(self, "캐시 로드 오류", error_msg)
         self.run_panel.refresh_cache_btn.setEnabled(True)

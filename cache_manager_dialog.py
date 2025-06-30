@@ -2,7 +2,7 @@
 
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QSplitter,
                              QListWidget, QTextEdit, QPushButton, QListWidgetItem,
-                             QMessageBox, QWidget, QLabel, QInputDialog) # QLineEdit 제거
+                             QMessageBox, QWidget, QLabel, QLineEdit, QInputDialog)
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtGui import QFont
 import os
@@ -14,7 +14,6 @@ class CacheManagerDialog(QDialog):
     refresh_requested = Signal()
     details_requested = Signal(str)
     delete_requested = Signal(str)
-    # *** 수정됨: TTL 업데이트 요청 시그널만 정의 ***
     update_ttl_requested = Signal(str, datetime.timedelta)
 
     def __init__(self, parent=None):
@@ -25,56 +24,61 @@ class CacheManagerDialog(QDialog):
         self.current_expire_time = None
         self.current_details_text = ""
 
-        self.ttl_timer = QTimer(self)
-        self.ttl_timer.setInterval(1000)
+        self.ttl_timer = QTimer(self); self.ttl_timer.setInterval(1000)
         self.ttl_timer.timeout.connect(self.update_remaining_time)
 
         self.list_widget = QListWidget()
         
-        # *** 수정됨: 이름 변경 UI 완전 제거 ***
         self.details_viewer = QTextEdit()
         self.details_viewer.setReadOnly(True)
         self.details_viewer.setFont(QFont("Courier New", 10))
         
+        details_widget = QWidget()
+        details_layout = QVBoxLayout(details_widget)
+        details_layout.addWidget(self.details_viewer)
+        
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.list_widget)
-        splitter.addWidget(self.details_viewer)
+        splitter.addWidget(self.list_widget); splitter.addWidget(details_widget)
         splitter.setSizes([300, 500])
 
         self.refresh_btn = QPushButton("새로고침")
-        self.new_cache_btn = QPushButton("새 캐시 생성...")
-        self.ttl_btn = QPushButton("TTL 연장")
+        self.new_cache_btn = QPushButton("새 캐시 생성..."); self.new_cache_btn.setEnabled(False)
+        self.ttl_btn = QPushButton("TTL 재설정")
         self.delete_btn = QPushButton("선택 캐시 삭제")
         self.close_btn = QPushButton("닫기")
 
         button_layout = QHBoxLayout()
-        button_layout.addWidget(self.refresh_btn)
-        button_layout.addWidget(self.new_cache_btn)
-        button_layout.addStretch()
-        button_layout.addWidget(self.ttl_btn)
-        button_layout.addWidget(self.delete_btn)
-        button_layout.addStretch()
+        button_layout.addWidget(self.refresh_btn); button_layout.addWidget(self.new_cache_btn)
+        button_layout.addStretch(); button_layout.addWidget(self.ttl_btn)
+        button_layout.addWidget(self.delete_btn); button_layout.addStretch()
         button_layout.addWidget(self.close_btn)
 
         main_layout = QVBoxLayout(self)
-        main_layout.addWidget(splitter)
-        main_layout.addLayout(button_layout)
+        main_layout.addWidget(splitter); main_layout.addLayout(button_layout)
         
-        self.set_details_enabled(False)
+        self.set_controls_enabled(False)
 
         self.refresh_btn.clicked.connect(self.refresh_requested)
         self.close_btn.clicked.connect(self.accept)
         self.list_widget.currentItemChanged.connect(self.on_item_selected)
         self.delete_btn.clicked.connect(self.on_delete_button_clicked)
         self.ttl_btn.clicked.connect(self.on_ttl_button_clicked)
-        self.new_cache_btn.setEnabled(False)
-
-    def set_details_enabled(self, enabled):
-        self.ttl_btn.setEnabled(enabled)
-        self.delete_btn.setEnabled(enabled)
+        
+    def set_controls_enabled(self, enabled):
+        self.list_widget.setEnabled(enabled)
+        item_selected = self.list_widget.currentItem() is not None and self.list_widget.currentItem().data(Qt.UserRole) is not None
+        self.ttl_btn.setEnabled(enabled and item_selected)
+        self.delete_btn.setEnabled(enabled and item_selected)
+        self.refresh_btn.setEnabled(enabled)
 
     def showEvent(self, event):
         super().showEvent(event)
+        # *** 수정됨: 창이 열릴 때마다 상태를 초기화하고 새로고침 요청 ***
+        self.list_widget.clear()
+        self.details_viewer.clear()
+        self.set_controls_enabled(False)
+        self.refresh_requested.emit()
+
     def closeEvent(self, event):
         if self.ttl_timer.isActive(): self.ttl_timer.stop()
         super().closeEvent(event)
@@ -99,30 +103,30 @@ class CacheManagerDialog(QDialog):
     def update_cache_list(self, caches):
         self.list_widget.blockSignals(True); self.list_widget.clear()
         if not caches:
-            self.list_widget.addItem("사용 가능한 캐시가 없습니다."); self.list_widget.setEnabled(False)
+            self.list_widget.addItem("사용 가능한 캐시가 없습니다.")
         else:
-            self.list_widget.setEnabled(True)
             for name, data in sorted(caches.items(), key=lambda item: item[1]['display_name']):
                 item = QListWidgetItem(data['display_name']); item.setData(Qt.UserRole, name); self.list_widget.addItem(item)
         self.list_widget.blockSignals(False)
-        self.details_viewer.clear(); self.set_details_enabled(False)
+        self.details_viewer.clear()
+        self.set_controls_enabled(True)
 
     @Slot(QListWidgetItem, QListWidgetItem)
     def on_item_selected(self, current, previous):
         self.ttl_timer.stop(); self.current_expire_time = None; self.details_viewer.clear()
+        self.set_controls_enabled(True) # 선택이 바뀌면 일단 컨트롤 활성화 시도
+        
         if current and current.data(Qt.UserRole):
-            self.set_details_enabled(True)
             self.current_cache_name = current.data(Qt.UserRole)
             self.details_viewer.setText(f"'{current.text()}' 상세 정보를 불러오는 중...")
             self.details_requested.emit(self.current_cache_name)
         else:
-            self.set_details_enabled(False); self.current_cache_name = None
-
+            self.set_controls_enabled(False); self.current_cache_name = None
+    
     @Slot()
     def on_ttl_button_clicked(self):
         if not self.current_cache_name: return
-        # *** 수정됨: min -> minValue ***
-        minutes, ok = QInputDialog.getInt(self, "TTL 연장", "새로운 TTL 값을 분 단위로 입력하세요:", 
+        minutes, ok = QInputDialog.getInt(self, "TTL 재설정", "새로운 TTL 값을 분 단위로 입력하세요:", 
                                            value=60, minValue=1, maxValue=60*24*30)
         if ok:
             new_ttl = datetime.timedelta(minutes=minutes)
@@ -141,14 +145,13 @@ class CacheManagerDialog(QDialog):
                                      QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             self.delete_requested.emit(cache_name_full)
-            self.set_details_enabled(False)
+            self.set_controls_enabled(False)
             self.details_viewer.setText(f"'{cache_display_name}' 캐시를 삭제하는 중...")
-            # *** 수정됨: 삭제 시 타이머 및 상태 초기화 ***
-            self.current_expire_time = None
-            self.ttl_timer.stop()
+            self.current_expire_time = None; self.ttl_timer.stop()
             
     @Slot(object)
     def update_details_view(self, cache_object):
+        self.set_controls_enabled(True)
         if not cache_object:
             self.details_viewer.setText("캐시 정보를 불러올 수 없습니다."); return
             
@@ -160,9 +163,10 @@ class CacheManagerDialog(QDialog):
         update_time_utc = getattr(cache_object, 'update_time', None)
         if update_time_utc: details.append(f"업데이트 시간 (KST): {update_time_utc.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')}")
         expire_time_utc = getattr(cache_object, 'expire_time', None)
+        self.current_expire_time = expire_time_utc # 타이머 계산을 위해 항상 업데이트
         if expire_time_utc:
             details.append(f"만료 시간 (KST): {expire_time_utc.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')}")
-            self.current_expire_time = expire_time_utc; self.ttl_timer.start()
+            if not self.ttl_timer.isActive(): self.ttl_timer.start()
         token_count_obj = getattr(cache_object, 'token_count', None)
         if token_count_obj:
             total_tokens = getattr(token_count_obj, 'total_tokens', 'N/A')
@@ -174,3 +178,4 @@ class CacheManagerDialog(QDialog):
     def show_error(self, error_message): 
         self.ttl_timer.stop()
         self.details_viewer.setText(f"오류:\n{error_message}")
+        self.set_controls_enabled(True)
